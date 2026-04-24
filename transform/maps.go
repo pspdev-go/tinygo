@@ -9,14 +9,14 @@ import (
 // In the future, this should statically allocate created but never modified
 // maps. This has not yet been implemented, however.
 func OptimizeMaps(mod llvm.Module) {
-	hashmapMake := mod.NamedFunction("runtime.hashmapMake")
+	hashmapMake := namedFunction(mod, "runtime.hashmapMake")
 	if hashmapMake.IsNil() {
 		// nothing to optimize
 		return
 	}
 
-	hashmapBinarySet := mod.NamedFunction("runtime.hashmapBinarySet")
-	hashmapStringSet := mod.NamedFunction("runtime.hashmapStringSet")
+	hashmapBinarySet := namedFunction(mod, "runtime.hashmapBinarySet")
+	hashmapStringSet := namedFunction(mod, "runtime.hashmapStringSet")
 
 	for _, makeInst := range getUses(hashmapMake) {
 		updateInsts := []llvm.Value{}

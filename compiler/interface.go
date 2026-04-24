@@ -787,7 +787,9 @@ func (c *compilerContext) getMethodsString(itf *types.Interface) string {
 // switch. The interface lowering pass will define this function.
 func (c *compilerContext) getInterfaceImplementsFunc(assertedType types.Type) llvm.Value {
 	s, _ := getTypeCodeName(assertedType.Underlying())
-	fnName := s + ".$typeassert"
+	origName := s + ".$typeassert"
+	fnName := c.functionSymbol(origName)
+
 	llvmFn := c.mod.NamedFunction(fnName)
 	if llvmFn.IsNil() {
 		llvmFnType := llvm.FunctionType(c.ctx.Int1Type(), []llvm.Type{c.dataPtrType}, false)
@@ -804,7 +806,9 @@ func (c *compilerContext) getInterfaceImplementsFunc(assertedType types.Type) ll
 // pass.
 func (c *compilerContext) getInvokeFunction(instr *ssa.CallCommon) llvm.Value {
 	s, _ := getTypeCodeName(instr.Value.Type().Underlying())
-	fnName := s + "." + instr.Method.Name() + "$invoke"
+	origName := s + "." + instr.Method.Name() + "$invoke"
+	fnName := c.functionSymbol(origName)
+
 	llvmFn := c.mod.NamedFunction(fnName)
 	if llvmFn.IsNil() {
 		sig := instr.Method.Type().(*types.Signature)
@@ -829,30 +833,24 @@ func (c *compilerContext) getInvokeFunction(instr *ssa.CallCommon) llvm.Value {
 // If the method to wrap has a pointer receiver, no wrapping is necessary and
 // the function is returned directly.
 func (c *compilerContext) getInterfaceInvokeWrapper(fn *ssa.Function, llvmFnType llvm.Type, llvmFn llvm.Value) llvm.Value {
-	wrapperName := llvmFn.Name() + "$invoke"
+	origWrapperName := c.getFunctionInfo(fn).origLinkName + "$invoke"
+	wrapperName := c.functionSymbol(origWrapperName)
+
 	wrapper := c.mod.NamedFunction(wrapperName)
 	if !wrapper.IsNil() {
-		// Wrapper already created. Return it directly.
 		return wrapper
 	}
 
-	// Get the expanded receiver type.
 	receiverType := c.getLLVMType(fn.Signature.Recv().Type())
 	var expandedReceiverType []llvm.Type
 	for _, info := range c.expandFormalParamType(receiverType, "", nil) {
 		expandedReceiverType = append(expandedReceiverType, info.llvmType)
 	}
 
-	// Does this method even need any wrapping?
 	if len(expandedReceiverType) == 1 && receiverType.TypeKind() == llvm.PointerTypeKind {
-		// Nothing to wrap.
-		// Casting a function signature to a different signature and calling it
-		// with a receiver pointer bitcasted to *i8 (as done in calls on an
-		// interface) is hopefully a safe (defined) operation.
 		return llvmFn
 	}
 
-	// create wrapper function
 	paramTypes := append([]llvm.Type{c.dataPtrType}, llvmFnType.ParamTypes()[len(expandedReceiverType):]...)
 	wrapFnType := llvm.FunctionType(llvmFnType.ReturnType(), paramTypes, false)
 	wrapper = llvm.AddFunction(c.mod, wrapperName, wrapFnType)
@@ -861,21 +859,18 @@ func (c *compilerContext) getInterfaceInvokeWrapper(fn *ssa.Function, llvmFnType
 	wrapper.SetLinkage(llvm.LinkOnceODRLinkage)
 	wrapper.SetUnnamedAddr(true)
 
-	// Create a new builder just to create this wrapper.
 	b := builder{
 		compilerContext: c,
 		Builder:         c.ctx.NewBuilder(),
 	}
 	defer b.Builder.Dispose()
 
-	// add debug info if needed
 	if c.Debug {
 		pos := c.program.Fset.Position(fn.Pos())
 		difunc := c.attachDebugInfoRaw(fn, wrapper, "$invoke", pos.Filename, pos.Line)
 		b.SetCurrentDebugLocation(uint(pos.Line), uint(pos.Column), difunc, llvm.Metadata{})
 	}
 
-	// set up IR builder
 	block := b.ctx.AddBasicBlock(wrapper, "entry")
 	b.SetInsertPointAtEnd(block)
 

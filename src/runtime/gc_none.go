@@ -1,4 +1,4 @@
-//go:build gc.none
+//go:build gc.none && !(baremetal && mipsle && psp)
 
 package runtime
 

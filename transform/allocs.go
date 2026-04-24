@@ -23,7 +23,7 @@ import (
 // heap allocation explanation should be printed (why the object can't be stack
 // allocated).
 func OptimizeAllocs(mod llvm.Module, printAllocs *regexp.Regexp, maxStackAlloc uint64, logger func(token.Position, string)) {
-	allocator := mod.NamedFunction("runtime.alloc")
+	allocator := namedFunction(mod, "runtime.alloc")
 	if allocator.IsNil() {
 		// nothing to optimize
 		return

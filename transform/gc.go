@@ -13,11 +13,11 @@ const shiftExcludeArgMem = 2
 // stores to stack slots that are scannable by the GC.
 func MakeGCStackSlots(mod llvm.Module) bool {
 	// Check whether there are allocations at all.
-	alloc := mod.NamedFunction("runtime.alloc")
+	alloc := namedFunction(mod, "runtime.alloc")
 	if alloc.IsNil() {
 		// Nothing to. Make sure all remaining bits and pieces for stack
 		// chains are neutralized.
-		for _, call := range getUses(mod.NamedFunction("runtime.trackPointer")) {
+		for _, call := range getUses(namedFunction(mod, "runtime.trackPointer")) {
 			call.EraseFromParentAsInstruction()
 		}
 		stackChainStart := mod.NamedGlobal("runtime.stackChainStart")
@@ -29,7 +29,7 @@ func MakeGCStackSlots(mod llvm.Module) bool {
 		return false
 	}
 
-	trackPointer := mod.NamedFunction("runtime.trackPointer")
+	trackPointer := namedFunction(mod, "runtime.trackPointer")
 	if trackPointer.IsNil() || trackPointer.FirstUse().IsNil() {
 		return false // nothing to do
 	}

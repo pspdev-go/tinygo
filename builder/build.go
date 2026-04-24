@@ -217,6 +217,8 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (BuildRe
 		Debug:              !config.Options.SkipDWARF, // emit DWARF except when -internal-nodwarf is passed
 		Nobounds:           config.Options.Nobounds,
 		PanicStrategy:      config.PanicStrategy(),
+
+		UseAsmSafeSymbolNames: config.Target.ExternalAssembler != "",
 	}
 
 	// Load the target machine, which is the LLVM object that contains all
@@ -311,7 +313,7 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (BuildRe
 						}
 					}
 
-					job.result, err = createEmbedObjectFile(string(data), hexSum, name, pkg.OriginalDir(), tmpdir, compilerConfig)
+					job.result, err = createEmbedObjectFile(config, string(data), hexSum, name, pkg.OriginalDir(), tmpdir, compilerConfig)
 					return err
 				},
 			}
@@ -473,7 +475,8 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (BuildRe
 				// Try to interpret package initializers at compile time.
 				// It may only be possible to do this partially, in which case
 				// it is completed after all IR files are linked.
-				pkgInit := mod.NamedFunction(pkg.Pkg.Path() + ".init")
+				pkgInitName := maybeAsmSafeName(config, pkg.Pkg.Path()+".init")
+				pkgInit := mod.NamedFunction(pkgInitName)
 				if pkgInit.IsNil() {
 					panic("init not found for " + pkg.Pkg.Path())
 				}
@@ -563,7 +566,10 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (BuildRe
 
 			// Create runtime.initAll function that calls the runtime
 			// initializer of each package.
-			llvmInitFn := mod.NamedFunction("runtime.initAll")
+			llvmInitFn := mod.NamedFunction(maybeAsmSafeName(config, "runtime.initAll"))
+			if llvmInitFn.IsNil() {
+				panic("builder: missing runtime.initAll")
+			}
 			llvmInitFn.SetLinkage(llvm.InternalLinkage)
 			llvmInitFn.SetUnnamedAddr(true)
 			transform.AddStandardAttributes(llvmInitFn, config)
@@ -574,7 +580,8 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (BuildRe
 			irbuilder.SetInsertPointAtEnd(block)
 			ptrType := llvm.PointerType(mod.Context().Int8Type(), 0)
 			for _, pkg := range lprogram.Sorted() {
-				pkgInit := mod.NamedFunction(pkg.Pkg.Path() + ".init")
+				pkgInitName := maybeAsmSafeName(config, pkg.Pkg.Path()+".init")
+				pkgInit := mod.NamedFunction(pkgInitName)
 				if pkgInit.IsNil() {
 					panic("init not found for " + pkg.Pkg.Path())
 				}
@@ -644,12 +651,7 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (BuildRe
 		// Generate output.
 		switch outext {
 		case ".o":
-			llvmBuf, err := machine.EmitToMemoryBuffer(mod, llvm.ObjectFile)
-			if err != nil {
-				return result, err
-			}
-			defer llvmBuf.Dispose()
-			return result, os.WriteFile(outpath, llvmBuf.Bytes(), 0666)
+			return result, emitObjectFile(config, machine, mod, outpath)
 		case ".bc":
 			buf := llvm.WriteThinLTOBitcodeToMemoryBuffer(mod)
 			defer buf.Dispose()
@@ -1071,7 +1073,7 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (BuildRe
 
 // createEmbedObjectFile creates a new object file with the given contents, for
 // the embed package.
-func createEmbedObjectFile(data, hexSum, sourceFile, sourceDir, tmpdir string, compilerConfig *compiler.Config) (string, error) {
+func createEmbedObjectFile(config *compileopts.Config, data, hexSum, sourceFile, sourceDir, tmpdir string, compilerConfig *compiler.Config) (string, error) {
 	// TODO: this works for small files, but can be a problem for larger files.
 	// For larger files, it seems more appropriate to generate the object file
 	// manually without going through LLVM.
@@ -1153,26 +1155,7 @@ func createEmbedObjectFile(data, hexSum, sourceFile, sourceDir, tmpdir string, c
 	dibuilder.Destroy()
 
 	// Write this LLVM module out as an object file.
-	machine, err := compiler.NewTargetMachine(compilerConfig)
-	if err != nil {
-		return "", err
-	}
-	defer machine.Dispose()
-	outfile, err := os.CreateTemp(tmpdir, "embed-"+hexSum+"-*.o")
-	if err != nil {
-		return "", err
-	}
-	defer outfile.Close()
-	buf, err := machine.EmitToMemoryBuffer(mod, llvm.ObjectFile)
-	if err != nil {
-		return "", err
-	}
-	defer buf.Dispose()
-	_, err = outfile.Write(buf.Bytes())
-	if err != nil {
-		return "", err
-	}
-	return outfile.Name(), outfile.Close()
+	return emitEmbedObjectFile(config, compilerConfig, mod, tmpdir, hexSum)
 }
 
 // optimizeProgram runs a series of optimizations and transformations that are
@@ -1547,9 +1530,123 @@ func lock(path string) func() {
 	return func() { flock.Close() }
 }
 
+func emitObjectFile(config *compileopts.Config, machine llvm.TargetMachine, mod llvm.Module, outpath string) error {
+	if config.Target.ExternalAssembler == "" {
+		llvmBuf, err := machine.EmitToMemoryBuffer(mod, llvm.ObjectFile)
+		if err != nil {
+			return err
+		}
+		defer llvmBuf.Dispose()
+		return os.WriteFile(outpath, llvmBuf.Bytes(), 0666)
+	}
+
+	base := strings.TrimSuffix(outpath, filepath.Ext(outpath))
+	bcPath := base + ".bc"
+
+	// 1. write bitcode
+	buf := llvm.WriteThinLTOBitcodeToMemoryBuffer(mod)
+	defer buf.Dispose()
+	if err := os.WriteFile(bcPath, buf.Bytes(), 0666); err != nil {
+		return err
+	}
+
+	defer os.Remove(bcPath)
+
+	// 2. invoke clang, but force external GNU as instead of integrated assembler
+	assemblerPath := config.Target.ExternalAssembler
+	assemblerDir := filepath.Dir(assemblerPath)
+
+	clangArgs := append([]string{}, config.Target.ClangFlags...)
+	clangArgs = append(clangArgs,
+		"-c",
+		"-fno-integrated-as",
+		"-B", assemblerDir,
+		"-Xassembler", "-EL",
+		"-Xassembler", "-mabi=eabi",
+		"-Xassembler", "-mhard-float",
+		"-Xassembler", "-msingle-float",
+		"-Xassembler", "-march=allegrex",
+		"-o", outpath,
+		bcPath,
+	)
+
+	if config.Options.PrintCommands != nil {
+		config.Options.PrintCommands("clang", clangArgs...)
+	}
+
+	clangPath := filepath.Join(goenv.Get("TINYGOROOT"), "llvm-build", "bin", "clang")
+	if _, err := os.Stat(clangPath); err != nil {
+		return fmt.Errorf("could not find clang at %s: %w", clangPath, err)
+	}
+
+	cmd := exec.Command(clangPath, clangArgs...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to run external clang: %w", err)
+	}
+
+	return nil
+}
+
+func emitEmbedObjectFile(config *compileopts.Config, compilerConfig *compiler.Config, mod llvm.Module, tmpdir, hexSum string) (string, error) {
+	machine, err := compiler.NewTargetMachine(compilerConfig)
+	if err != nil {
+		return "", err
+	}
+	defer machine.Dispose()
+
+	outfile, err := os.CreateTemp(tmpdir, "embed-"+hexSum+"-*.o")
+	if err != nil {
+		return "", err
+	}
+	outfile.Close()
+
+	if err := emitObjectFile(config, machine, mod, outfile.Name()); err != nil {
+		return "", err
+	}
+	return outfile.Name(), nil
+}
+
 func b2u8(b bool) uint8 {
 	if b {
 		return 1
 	}
 	return 0
+}
+
+func asmSafeName(name string) string {
+	var b strings.Builder
+	b.Grow(len(name) + 3)
+	b.WriteString("tg_")
+
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		switch {
+		case c >= 'a' && c <= 'z':
+			b.WriteByte(c)
+		case c >= 'A' && c <= 'Z':
+			b.WriteByte(c)
+		case c >= '0' && c <= '9':
+			b.WriteByte(c)
+		case c == '_':
+			b.WriteByte(c)
+		default:
+			b.WriteByte('_')
+		}
+	}
+
+	return b.String()
+}
+
+func maybeAsmSafeName(config *compileopts.Config, name string) string {
+	if config != nil && config.Target.ExternalAssembler != "" {
+		switch name {
+		case "tinygo_psp_start", "runtime_putchar":
+			return name
+		default:
+			return asmSafeName(name)
+		}
+	}
+	return name
 }

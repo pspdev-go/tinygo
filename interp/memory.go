@@ -854,23 +854,22 @@ func (v rawValue) toLLVMValue(llvmType llvm.Type, mem *memoryView) (llvm.Value, 
 	}
 	switch llvmType.TypeKind() {
 	case llvm.IntegerTypeKind:
-		if v.buf[0] > 255 {
+		// Only reinterpret as a pointer when the destination integer has pointer width.
+		if v.buf[0] > 255 &&
+			mem.r.targetData.TypeAllocSize(llvmType) == mem.r.targetData.TypeAllocSize(mem.r.dataPtrType) {
+
 			ptr, err := v.asPointer(mem.r)
 			if err != nil {
 				panic(err)
 			}
-			if checks && mem.r.targetData.TypeAllocSize(llvmType) != mem.r.targetData.TypeAllocSize(mem.r.dataPtrType) {
-				// Probably trying to serialize a pointer to a byte array,
-				// perhaps as a result of rawLLVMValue() in a previous interp
-				// run.
-				return llvm.Value{}, errInvalidPtrToIntSize
-			}
-			v, err := ptr.toLLVMValue(llvm.Type{}, mem)
+			pv, err := ptr.toLLVMValue(llvm.Type{}, mem)
 			if err != nil {
 				return llvm.Value{}, err
 			}
-			return llvm.ConstPtrToInt(v, llvmType), nil
+			return llvm.ConstPtrToInt(pv, llvmType), nil
 		}
+
+		// Otherwise, serialize as a plain integer from raw bytes.
 		var n uint64
 		switch llvmType.IntTypeWidth() {
 		case 64:
@@ -880,12 +879,9 @@ func (v rawValue) toLLVMValue(llvmType llvm.Type, mem *memoryView) (llvm.Value, 
 		case 16:
 			n = rawValue{v.buf[:2]}.Uint(mem.r)
 		case 8:
-			n = uint64(v.buf[0])
+			n = uint64(v.buf[0] & 0xff)
 		case 1:
-			n = uint64(v.buf[0])
-			if n != 0 && n != 1 {
-				panic("bool must be 0 or 1")
-			}
+			n = uint64(v.buf[0] & 1)
 		default:
 			panic("unknown integer size")
 		}

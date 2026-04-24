@@ -12,6 +12,42 @@ import (
 	"tinygo.org/x/go-llvm"
 )
 
+func isFunctionNamed(fn llvm.Value, name string) bool {
+	llvmName := fn.Name()
+	return llvmName == name || llvmName == maybeAsmSafeName(name)
+}
+
+func hasFunctionPrefix(fn llvm.Value, prefix string) bool {
+	llvmName := fn.Name()
+	return strings.HasPrefix(llvmName, prefix) || strings.HasPrefix(llvmName, asmSafeName(prefix))
+}
+
+func hasFunctionSuffix(fn llvm.Value, suffix string) bool {
+	llvmName := fn.Name()
+	if strings.HasSuffix(llvmName, suffix) {
+		return true
+	}
+
+	var b strings.Builder
+	b.Grow(len(suffix))
+	for i := 0; i < len(suffix); i++ {
+		c := suffix[i]
+		switch {
+		case c >= 'a' && c <= 'z':
+			b.WriteByte(c)
+		case c >= 'A' && c <= 'Z':
+			b.WriteByte(c)
+		case c >= '0' && c <= '9':
+			b.WriteByte(c)
+		case c == '_':
+			b.WriteByte(c)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	return strings.HasSuffix(llvmName, b.String())
+}
+
 func (r *runner) run(fn *function, params []value, parentMem *memoryView, indent string) (value, memoryView, *Error) {
 	mem := memoryView{r: r, parent: parentMem}
 	locals := make([]value, len(fn.locals))
@@ -231,16 +267,16 @@ func (r *runner) run(fn *function, params []value, parentMem *memoryView, indent
 			}
 			callFn := r.getFunction(fnPtr.llvmValue(&mem))
 			switch {
-			case callFn.name == "runtime.trackPointer":
+			case isFunctionNamed(callFn.llvmFn, "runtime.trackPointer"):
 				// Allocas and such are created as globals, so don't need a
 				// runtime.trackPointer.
 				// Unless the object is allocated at runtime for example, in
 				// which case this call won't even get to this point but will
 				// already be emitted in initAll.
 				continue
-			case strings.HasPrefix(callFn.name, "runtime.print") || callFn.name == "runtime._panic" || callFn.name == "runtime.hashmapGet" || callFn.name == "runtime.hashmapInterfaceHash" ||
-				callFn.name == "os.runtime_args" || callFn.name == "internal/task.start" || callFn.name == "internal/task.Current" ||
-				callFn.name == "time.startTimer" || callFn.name == "time.stopTimer" || callFn.name == "time.resetTimer":
+			case hasFunctionPrefix(callFn.llvmFn, "runtime.print") || isFunctionNamed(callFn.llvmFn, "runtime._panic") || isFunctionNamed(callFn.llvmFn, "runtime.hashmapGet") || isFunctionNamed(callFn.llvmFn, "runtime.hashmapInterfaceHash") ||
+				isFunctionNamed(callFn.llvmFn, "os.runtime_args") || isFunctionNamed(callFn.llvmFn, "internal/task.start") || isFunctionNamed(callFn.llvmFn, "internal/task.Current") ||
+				isFunctionNamed(callFn.llvmFn, "time.startTimer") || isFunctionNamed(callFn.llvmFn, "time.stopTimer") || isFunctionNamed(callFn.llvmFn, "time.resetTimer"):
 				// These functions should be run at runtime. Specifically:
 				//   * Print and panic functions are best emitted directly without
 				//     interpreting them, otherwise we get a ton of putchar (etc.)
@@ -259,10 +295,10 @@ func (r *runner) run(fn *function, params []value, parentMem *memoryView, indent
 				if err != nil {
 					return nil, mem, err
 				}
-			case callFn.name == "internal/task.Pause":
+			case isFunctionNamed(callFn.llvmFn, "internal/task.Pause"):
 				// Task scheduling isn't possible at compile time.
 				return nil, mem, r.errorAt(inst, errUnsupportedRuntimeInst)
-			case callFn.name == "runtime.nanotime" && r.pkgName == "time":
+			case isFunctionNamed(callFn.llvmFn, "runtime.nanotime") && r.pkgName == "time":
 				// The time package contains a call to runtime.nanotime.
 				// This appears to be to work around a limitation in Windows
 				// Server 2008:
@@ -277,7 +313,7 @@ func (r *runner) run(fn *function, params []value, parentMem *memoryView, indent
 				// means that monotonic time in the time package is counted from
 				// time.Time{}.Sub(1), which should be fine.
 				locals[inst.localIndex] = literalValue{uint64(0)}
-			case callFn.name == "runtime.alloc":
+			case isFunctionNamed(callFn.llvmFn, "runtime.alloc"):
 				// Allocate heap memory. At compile time, this is instead done
 				// by creating a global variable.
 
@@ -378,7 +414,7 @@ func (r *runner) run(fn *function, params []value, parentMem *memoryView, indent
 					dstObj.buffer = dstBuf
 					mem.put(dst.index(), dstObj)
 				}
-			case callFn.name == "runtime.typeAssert":
+			case isFunctionNamed(callFn.llvmFn, "runtime.typeAssert"):
 				// This function must be implemented manually as it is normally
 				// implemented by the interface lowering pass.
 				if r.debug {
@@ -413,7 +449,7 @@ func (r *runner) run(fn *function, params []value, parentMem *memoryView, indent
 				// Special function that will trigger an error.
 				// This is used to test error reporting.
 				return nil, mem, r.errorAt(inst, errors.New("test error"))
-			case strings.HasSuffix(callFn.name, ".$typeassert"):
+			case hasFunctionSuffix(callFn.llvmFn, ".$typeassert"):
 				if r.debug {
 					fmt.Fprintln(os.Stderr, indent+"interface assert:", operands[1:])
 				}
@@ -471,7 +507,7 @@ func (r *runner) run(fn *function, params []value, parentMem *memoryView, indent
 				}
 				// If assertOk is still 1, the assertion succeeded.
 				locals[inst.localIndex] = literalValue{assertOk}
-			case strings.HasSuffix(callFn.name, "$invoke"):
+			case hasFunctionSuffix(callFn.llvmFn, "$invoke"):
 				// This thunk is the interface method dispatcher: it is called
 				// with all regular parameters and a type code. It will then
 				// call the concrete method for it.

@@ -60,6 +60,8 @@ type Config struct {
 	Debug              bool // Whether to emit debug information in the LLVM module.
 	Nobounds           bool // Whether to skip bounds checks
 	PanicStrategy      string
+
+	UseAsmSafeSymbolNames bool
 }
 
 // compilerContext contains function-independent data that should still be
@@ -142,6 +144,10 @@ func newCompilerContext(moduleName string, machine llvm.TargetMachine, config *C
 // the associated context).
 func (c *compilerContext) dispose() {
 	c.builder.Dispose()
+}
+
+func (c *compilerContext) functionSymbol(name string) string {
+	return maybeAsmSafeName(c.UseAsmSafeSymbolNames, name)
 }
 
 // builder contains all information relevant to build a single function.
@@ -801,9 +807,10 @@ func (c *compilerContext) attachDebugInfoRaw(f *ssa.Function, llvmFn llvm.Value,
 		Parameters: diparams,
 		Flags:      0, // ?
 	})
+	orig := c.getFunctionInfo(f).origLinkName + suffix
 	difunc := c.dibuilder.CreateFunction(c.getDIFile(filename), llvm.DIFunction{
 		Name:         f.RelString(nil) + suffix,
-		LinkageName:  c.getFunctionInfo(f).linkName + suffix,
+		LinkageName:  c.functionSymbol(orig),
 		File:         c.getDIFile(filename),
 		Line:         line,
 		Type:         diFuncType,

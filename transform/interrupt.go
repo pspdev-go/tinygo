@@ -68,7 +68,7 @@ func LowerInterrupts(mod llvm.Module) []error {
 	// Discover interrupts. The runtime/interrupt.callHandlers call is a
 	// compiler intrinsic that is replaced with the handlers for the given
 	// function.
-	for _, call := range getUses(mod.NamedFunction("runtime/interrupt.callHandlers")) {
+	for _, call := range getUses(namedFunction(mod, "runtime/interrupt.callHandlers")) {
 		if call.IsACallInst().IsNil() {
 			errs = append(errs, errorAt(call, "expected a call to runtime/interrupt.callHandlers?"))
 			continue
@@ -149,7 +149,7 @@ func LowerInterrupts(mod llvm.Module) []error {
 	// need another way to keep them alive.
 	// After interrupts have been lowered, this call is useless and would cause
 	// a linker error so must be removed.
-	for _, call := range getUses(mod.NamedFunction("runtime/interrupt.use")) {
+	for _, call := range getUses(namedFunction(mod, "runtime/interrupt.use")) {
 		if call.IsACallInst().IsNil() {
 			errs = append(errs, errorAt(call, "internal error: expected call to runtime/interrupt.use"))
 			continue

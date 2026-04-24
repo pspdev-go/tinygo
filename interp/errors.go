@@ -4,6 +4,7 @@ package interp
 
 import (
 	"errors"
+	"fmt"
 	"go/scanner"
 	"go/token"
 	"path/filepath"
@@ -93,4 +94,11 @@ func getPosition(inst llvm.Value) token.Position {
 		Line:     int(loc.LocationLine()),
 		Column:   int(loc.LocationColumn()),
 	}
+}
+
+func (r *runner) ptrIntSizeError(fnName string, inst instruction, op string, fromBits, toBits uint64) *Error {
+	return r.errorAt(inst, fmt.Errorf(
+		"interp: %s integer size does not equal pointer size: fn=%s from=%d to=%d inst=%s",
+		op, fnName, fromBits, toBits, inst.llvmInst.String(),
+	))
 }

@@ -28,6 +28,7 @@ type functionInfo struct {
 	wasmName      string     // wasm-export-name or wasm-import-name in the IR
 	wasmExport    string     // go:wasmexport is defined (export is unset, this adds an exported wrapper)
 	wasmExportPos token.Pos  // position of //go:wasmexport comment
+	origLinkName  string     // the original link name, before applying //go:linkname or //go:export
 	linkName      string     // go:linkname, go:export - the IR function name
 	section       string     // go:section - object file section name
 	exported      bool       // go:export, CGo
@@ -152,7 +153,7 @@ func (c *compilerContext) getFunction(fn *ssa.Function) (llvm.Type, llvm.Value) 
 	// Set a number of function or parameter attributes, depending on the
 	// function. These functions are runtime functions that are known to have
 	// certain attributes that might not be inferred by the compiler.
-	switch info.linkName {
+	switch info.origLinkName {
 	case "abort":
 		// On *nix systems, the "abort" functuion in libc is used to handle fatal panics.
 		// Mark it as noreturn so LLVM can optimize away code.
@@ -291,23 +292,37 @@ func (c *compilerContext) getFunctionInfo(f *ssa.Function) functionInfo {
 	if info, ok := c.functionInfos[f]; ok {
 		return info
 	}
+
+	orig := f.RelString(nil)
+	linkName := maybeAsmSafeName(c.UseAsmSafeSymbolNames, orig)
+
+	// Some declaration-only aliases are referenced by raw name via //go:linkname,
+	// so keep their definitions on the raw symbol.
+	switch orig {
+	case "main.main",
+		"runtime.composeInterface",
+		"runtime.decomposeInterface",
+		"runtime.valueInterfaceUnsafe":
+		linkName = orig
+	}
+
 	info := functionInfo{
-		// Pick the default linkName.
-		linkName: f.RelString(nil),
+		origLinkName: orig,
+		linkName:     linkName,
 	}
 
 	// Check for a few runtime functions that are treated specially.
-	if info.linkName == "runtime.wasmEntryReactor" && c.BuildMode == "c-shared" {
+	if info.origLinkName == "runtime.wasmEntryReactor" && c.BuildMode == "c-shared" {
 		info.linkName = "_initialize"
 		info.wasmName = "_initialize"
 		info.exported = true
 	}
-	if info.linkName == "runtime.wasmEntryCommand" && c.BuildMode == "default" {
+	if info.origLinkName == "runtime.wasmEntryCommand" && c.BuildMode == "default" {
 		info.linkName = "_start"
 		info.wasmName = "_start"
 		info.exported = true
 	}
-	if info.linkName == "runtime.wasmEntryLegacy" && c.BuildMode == "wasi-legacy" {
+	if info.origLinkName == "runtime.wasmEntryLegacy" && c.BuildMode == "wasi-legacy" {
 		info.linkName = "_start"
 		info.wasmName = "_start"
 		info.exported = true
@@ -631,10 +646,11 @@ func (c *compilerContext) addStandardAttributes(llvmFn llvm.Value) {
 // linkName is equal to .RelString(nil) on a global and extern is false, but for
 // some symbols this is different (due to //go:extern for example).
 type globalInfo struct {
-	linkName string // go:extern, go:linkname
-	extern   bool   // go:extern
-	align    int    // go:align
-	section  string // go:section
+	origLinkName string
+	linkName     string // go:extern, go:linkname
+	extern       bool   // go:extern
+	align        int    // go:align
+	section      string // go:section
 }
 
 // loadASTComments loads comments on globals from the AST, for use later in the
@@ -709,12 +725,13 @@ func (c *compilerContext) getGlobal(g *ssa.Global) llvm.Value {
 
 // getGlobalInfo returns some information about a specific global.
 func (c *compilerContext) getGlobalInfo(g *ssa.Global) globalInfo {
+	orig := g.RelString(nil)
 	info := globalInfo{
-		// Pick the default linkName.
-		linkName: g.RelString(nil),
+		origLinkName: orig,
+		linkName:     orig,
 	}
 	// Check for //go: pragmas, which may change the link name (among others).
-	doc := c.astComments[info.linkName]
+	doc := c.astComments[info.origLinkName]
 	if doc != nil {
 		info.parsePragmas(doc, c, g)
 	}
@@ -777,4 +794,42 @@ func hasUnsafeImport(pkg *types.Package) bool {
 		}
 	}
 	return false
+}
+
+// Return a name that is safe to use in assembly. In particular, it
+func asmSafeName(name string) string {
+	var b strings.Builder
+	b.Grow(len(name) + 3)
+	b.WriteString("tg_")
+
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		switch {
+		case c >= 'a' && c <= 'z':
+			b.WriteByte(c)
+		case c >= 'A' && c <= 'Z':
+			b.WriteByte(c)
+		case c >= '0' && c <= '9':
+			b.WriteByte(c)
+		case c == '_':
+			b.WriteByte(c)
+		default:
+			b.WriteByte('_')
+		}
+	}
+
+	return b.String()
+}
+
+func maybeAsmSafeName(use bool, name string) string {
+	if !use {
+		return name
+	}
+
+	switch name {
+	case "tinygo_psp_start", "runtime_putchar":
+		return name
+	default:
+		return asmSafeName(name)
+	}
 }

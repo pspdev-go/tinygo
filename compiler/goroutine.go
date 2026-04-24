@@ -53,13 +53,16 @@ func (b *builder) createGo(instr *ssa.Go) {
 		params = append(params, b.expandFormalParam(b.getValue(param, getPos(instr)))...)
 	}
 
-	var prefix string
+	var wrapperBaseName string
 	var funcPtr llvm.Value
 	var funcType llvm.Type
 	hasContext := false
+
 	if callee := instr.Call.StaticCallee(); callee != nil {
 		// Static callee is known. This makes it easier to start a new
 		// goroutine.
+		wrapperBaseName = callee.RelString(nil)
+
 		var context llvm.Value
 		switch value := instr.Call.Value.(type) {
 		case *ssa.Function:
@@ -77,8 +80,12 @@ func (b *builder) createGo(instr *ssa.Go) {
 			hasContext = true
 		}
 		funcType, funcPtr = b.getFunction(callee)
+
 	} else if instr.Call.IsInvoke() {
 		// This is a method call on an interface value.
+		// There is no single stable static callee symbol here, so wrapperBaseName
+		// is left empty and createGoroutineStartWrapper will fall back to a
+		// synthetic base name if needed.
 		itf := b.getValue(instr.Call.Value, getPos(instr))
 		itfTypeCode := b.CreateExtractValue(itf, 0, "")
 		itfValue := b.CreateExtractValue(itf, 1, "")
@@ -86,6 +93,7 @@ func (b *builder) createGo(instr *ssa.Go) {
 		funcType = funcPtr.GlobalValueType()
 		params = append([]llvm.Value{itfValue}, params...) // start with receiver
 		params = append(params, itfTypeCode)               // end with typecode
+
 	} else {
 		// This is a function pointer.
 		// At the moment, two extra params are passed to the newly started
@@ -97,12 +105,17 @@ func (b *builder) createGo(instr *ssa.Go) {
 		funcType = b.getLLVMFunctionType(instr.Call.Value.Type().Underlying().(*types.Signature))
 		params = append(params, context, funcPtr)
 		hasContext = true
-		prefix = b.fn.RelString(nil)
+
+		// Use the current function name as the base for a synthetic wrapper name.
+		// This keeps the name deterministic while still allowing the wrapper name
+		// to be fully normalized by functionSymbol().
+		wrapperBaseName = b.fn.RelString(nil)
 	}
 
 	paramBundle := b.emitPointerPack(params)
 	var stackSize llvm.Value
-	callee := b.createGoroutineStartWrapper(funcType, funcPtr, prefix, hasContext, false, instr.Pos())
+	callee := b.createGoroutineStartWrapper(funcType, funcPtr, wrapperBaseName, hasContext, false, instr.Pos())
+
 	if b.AutomaticStackSize {
 		// The stack size is not known until after linking. Call a dummy
 		// function that will be replaced with a load from a special ELF
@@ -118,6 +131,7 @@ func (b *builder) createGo(instr *ssa.Go) {
 		}
 		stackSize = llvm.ConstInt(b.uintptrType, b.DefaultStackSize, false)
 	}
+
 	fnType, start := b.getFunction(b.program.ImportedPackage("internal/task").Members["start"].(*ssa.Function))
 	b.createCall(fnType, start, []llvm.Value{callee, paramBundle, stackSize, llvm.Undef(b.dataPtrType)}, "")
 }
@@ -139,7 +153,8 @@ func (b *builder) createWasmExport() {
 	// Declare the exported function.
 	paramTypes := b.llvmFnType.ParamTypes()
 	exportedFnType := llvm.FunctionType(b.llvmFnType.ReturnType(), paramTypes[:len(paramTypes)-1], false)
-	exportedFn := llvm.AddFunction(b.mod, b.fn.RelString(nil)+suffix, exportedFnType)
+	exportedName := b.compilerContext.functionSymbol(b.fn.RelString(nil) + suffix)
+	exportedFn := llvm.AddFunction(b.mod, exportedName, exportedFnType)
 	b.addStandardAttributes(exportedFn)
 	llvmutil.AppendToGlobal(b.mod, "llvm.used", exportedFn)
 	exportedFn.AddFunctionAttr(b.ctx.CreateStringAttribute("wasm-export-name", b.info.wasmExport))
@@ -240,7 +255,14 @@ func (b *builder) createWasmExport() {
 		}
 
 		// Create a new goroutine and add it to the runqueue.
-		wrapper := b.createGoroutineStartWrapper(b.llvmFnType, b.llvmFn, "", false, true, pos)
+		wrapper := b.createGoroutineStartWrapper(
+			b.llvmFnType,
+			b.llvmFn,
+			b.fn.RelString(nil),
+			false,
+			true,
+			pos,
+		)
 		stackSize := llvm.ConstInt(b.uintptrType, b.DefaultStackSize, false)
 		taskStartFnType, taskStartFn := builder.getFunction(b.program.ImportedPackage("internal/task").Members["start"].(*ssa.Function))
 		builder.createCall(taskStartFnType, taskStartFn, []llvm.Value{wrapper, statePtr, stackSize, llvm.Undef(b.dataPtrType)}, "")
@@ -286,7 +308,7 @@ func (b *builder) createWasmExport() {
 // to last parameter of the function) is used for this wrapper. If hasContext is
 // false, the parameter bundle is assumed to have no context parameter and undef
 // is passed instead.
-func (c *compilerContext) createGoroutineStartWrapper(fnType llvm.Type, fn llvm.Value, prefix string, hasContext, isWasmExport bool, pos token.Pos) llvm.Value {
+func (c *compilerContext) createGoroutineStartWrapper(fnType llvm.Type, fn llvm.Value, wrapperBaseName string, hasContext, isWasmExport bool, pos token.Pos) llvm.Value {
 	var wrapper llvm.Value
 
 	b := &builder{
@@ -302,12 +324,21 @@ func (c *compilerContext) createGoroutineStartWrapper(fnType llvm.Type, fn llvm.
 	}
 
 	if !fn.IsAFunction().IsNil() {
-		// See whether this wrapper has already been created. If so, return it.
-		name := fn.Name()
-		wrapperName := name + "$gowrapper"
-		if isWasmExport {
-			wrapperName += "-wasmexport"
+		// Wrapper for a known function symbol.
+
+		baseName := wrapperBaseName
+		if baseName == "" {
+			// Fallback only. Prefer passing an original symbol base from the caller.
+			baseName = fn.Name()
 		}
+
+		origWrapperName := baseName + "$gowrapper"
+		if isWasmExport {
+			origWrapperName += "-wasmexport"
+		}
+		wrapperName := c.functionSymbol(origWrapperName)
+
+		// See whether this wrapper has already been created. If so, return it.
 		wrapper = c.mod.NamedFunction(wrapperName)
 		if !wrapper.IsNil() {
 			return llvm.ConstPtrToInt(wrapper, c.uintptrType)
@@ -319,7 +350,7 @@ func (c *compilerContext) createGoroutineStartWrapper(fnType llvm.Type, fn llvm.
 		c.addStandardAttributes(wrapper)
 		wrapper.SetLinkage(llvm.LinkOnceODRLinkage)
 		wrapper.SetUnnamedAddr(true)
-		wrapper.AddAttributeAtIndex(-1, c.ctx.CreateStringAttribute("tinygo-gowrapper", name))
+		wrapper.AddAttributeAtIndex(-1, c.ctx.CreateStringAttribute("tinygo-gowrapper", wrapperName))
 		entry := c.ctx.AddBasicBlock(wrapper, "entry")
 		b.SetInsertPointAtEnd(entry)
 
@@ -469,13 +500,26 @@ func (c *compilerContext) createGoroutineStartWrapper(fnType llvm.Type, fn llvm.
 		// With a bit of luck, identical wrapper functions like these can be
 		// merged into one.
 
+		baseName := wrapperBaseName
+		if baseName == "" {
+			baseName = "funcptr"
+		}
+		origWrapperName := baseName + ".gowrapper"
+		wrapperName := c.functionSymbol(origWrapperName)
+
+		// Reuse an existing wrapper if one was already created.
+		wrapper = c.mod.NamedFunction(wrapperName)
+		if !wrapper.IsNil() {
+			return llvm.ConstPtrToInt(wrapper, c.uintptrType)
+		}
+
 		// Create the wrapper.
 		wrapperType := llvm.FunctionType(c.ctx.VoidType(), []llvm.Type{c.dataPtrType}, false)
-		wrapper = llvm.AddFunction(c.mod, prefix+".gowrapper", wrapperType)
+		wrapper = llvm.AddFunction(c.mod, wrapperName, wrapperType)
 		c.addStandardAttributes(wrapper)
 		wrapper.SetLinkage(llvm.LinkOnceODRLinkage)
 		wrapper.SetUnnamedAddr(true)
-		wrapper.AddAttributeAtIndex(-1, c.ctx.CreateStringAttribute("tinygo-gowrapper", ""))
+		wrapper.AddAttributeAtIndex(-1, c.ctx.CreateStringAttribute("tinygo-gowrapper", wrapperName))
 		entry := c.ctx.AddBasicBlock(wrapper, "entry")
 		b.SetInsertPointAtEnd(entry)
 

@@ -282,7 +282,7 @@ func (p *lowerInterfacesPass) run() error {
 	// Replace each type assert with an actual type comparison or (if the type
 	// assert is impossible) the constant false.
 	llvmFalse := llvm.ConstInt(p.ctx.Int1Type(), 0, false)
-	for _, use := range getUses(p.mod.NamedFunction("runtime.typeAssert")) {
+	for _, use := range getUses(namedFunction(p.mod, "runtime.typeAssert")) {
 		actualType := use.Operand(0)
 		name := strings.TrimPrefix(use.Operand(1).Name(), "reflect/types.typeid:")
 		gepOffset := uint64(0)
@@ -577,7 +577,7 @@ func (p *lowerInterfacesPass) defineInterfaceMethodFunc(fn llvm.Value, itf *inte
 	// that would increase code size and "nil panic" is close enough. Most
 	// importantly, it avoids undefined behavior when accidentally calling a
 	// method on a nil interface.
-	nilPanic := p.mod.NamedFunction("runtime.nilPanic")
+	nilPanic := namedFunction(p.mod, "runtime.nilPanic")
 	p.builder.CreateCall(nilPanic.GlobalValueType(), nilPanic, []llvm.Value{
 		llvm.Undef(p.ptrType),
 	}, "")

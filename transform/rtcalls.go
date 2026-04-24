@@ -16,7 +16,7 @@ import (
 //
 // where Write does not store to the slice.
 func OptimizeStringToBytes(mod llvm.Module) {
-	stringToBytes := mod.NamedFunction("runtime.stringToBytes")
+	stringToBytes := namedFunction(mod, "runtime.stringToBytes")
 	if stringToBytes.IsNil() {
 		// nothing to optimize
 		return
@@ -77,7 +77,7 @@ func OptimizeStringToBytes(mod llvm.Module) {
 // integer comparisons if at least one of the sides of the comparison is zero.
 // Ths converts str == "" into len(str) == 0 and "" == "" into false.
 func OptimizeStringEqual(mod llvm.Module) {
-	stringEqual := mod.NamedFunction("runtime.stringEqual")
+	stringEqual := namedFunction(mod, "runtime.stringEqual")
 	if stringEqual.IsNil() {
 		// nothing to optimize
 		return
@@ -164,7 +164,8 @@ func OptimizeReflectImplements(mod llvm.Module) {
 			// reported at runtime.
 			continue
 		}
-		typeAssertFunction := mod.NamedFunction(strings.TrimPrefix(interfaceType.Name(), "reflect/types.type:") + ".$typeassert")
+		origName := strings.TrimPrefix(interfaceType.Name(), "reflect/types.type:") + ".$typeassert"
+		typeAssertFunction := namedFunction(mod, origName)
 		if typeAssertFunction.IsNil() {
 			continue
 		}

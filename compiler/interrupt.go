@@ -85,10 +85,11 @@ func (b *builder) createInterruptGlobal(instr *ssa.CallCommon) (llvm.Value, erro
 	// thus keeps the Interrupt object alive.
 	// This call is removed during interrupt lowering.
 	if strings.HasPrefix(b.Triple, "avr") {
-		useFn := b.mod.NamedFunction("runtime/interrupt.use")
+		useFnName := b.functionSymbol("runtime/interrupt.use")
+		useFn := b.mod.NamedFunction(useFnName)
 		if useFn.IsNil() {
 			useFnType := llvm.FunctionType(b.ctx.VoidType(), []llvm.Type{interrupt.Type()}, false)
-			useFn = llvm.AddFunction(b.mod, "runtime/interrupt.use", useFnType)
+			useFn = llvm.AddFunction(b.mod, useFnName, useFnType)
 		}
 		b.CreateCall(useFn.GlobalValueType(), useFn, []llvm.Value{interrupt}, "")
 	}

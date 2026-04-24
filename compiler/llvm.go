@@ -9,6 +9,7 @@ import (
 
 	"github.com/tinygo-org/tinygo/compileopts"
 	"github.com/tinygo-org/tinygo/compiler/llvmutil"
+	"golang.org/x/tools/go/ssa"
 	"tinygo.org/x/go-llvm"
 )
 
@@ -61,135 +62,89 @@ func (b *builder) emitPointerPack(values []llvm.Value) llvm.Value {
 	}
 	packedType := b.ctx.StructType(valueTypes, false)
 
-	// Allocate memory for the packed data.
 	size := b.targetData.TypeAllocSize(packedType)
 	if size == 0 {
 		return llvm.ConstPointerNull(b.dataPtrType)
-	} else if len(values) == 1 && values[0].Type().TypeKind() == llvm.PointerTypeKind {
-		return values[0]
-	} else if size <= b.targetData.TypeAllocSize(b.dataPtrType) {
-		// Packed data fits in a pointer, so store it directly inside the
-		// pointer.
-		if len(values) == 1 && values[0].Type().TypeKind() == llvm.IntegerTypeKind {
-			// Try to keep this cast in SSA form.
-			return b.CreateIntToPtr(values[0], b.dataPtrType, "pack.int")
-		}
-
-		// Because packedType is a struct and we have to cast it to a *i8, store
-		// it in a *i8 alloca first and load the *i8 value from there. This is
-		// effectively a bitcast.
-		packedAlloc, _ := b.createTemporaryAlloca(b.dataPtrType, "")
-
-		if size < b.targetData.TypeAllocSize(b.dataPtrType) {
-			// The alloca is bigger than the value that will be stored in it.
-			// To avoid having some bits undefined, zero the alloca first.
-			// Hopefully this will get optimized away.
-			b.CreateStore(llvm.ConstNull(b.dataPtrType), packedAlloc)
-		}
-
-		// Store all values in the alloca.
-		for i, value := range values {
-			indices := []llvm.Value{
-				llvm.ConstInt(b.ctx.Int32Type(), 0, false),
-				llvm.ConstInt(b.ctx.Int32Type(), uint64(i), false),
-			}
-			gep := b.CreateInBoundsGEP(packedType, packedAlloc, indices, "")
-			b.CreateStore(value, gep)
-		}
-
-		// Load value (the *i8) from the alloca.
-		result := b.CreateLoad(b.dataPtrType, packedAlloc, "")
-
-		// End the lifetime of the alloca, to help the optimizer.
-		packedSize := llvm.ConstInt(b.ctx.Int64Type(), b.targetData.TypeAllocSize(packedAlloc.Type()), false)
-		b.emitLifetimeEnd(packedAlloc, packedSize)
-
-		return result
-	} else {
-		// Check if the values are all constants.
-		constant := true
-		for _, v := range values {
-			if !v.IsConstant() {
-				constant = false
-				break
-			}
-		}
-
-		if constant {
-			// The data is known at compile time, so store it in a constant global.
-			// The global address is marked as unnamed, which allows LLVM to merge duplicates.
-			global := llvm.AddGlobal(b.mod, packedType, b.pkg.Path()+"$pack")
-			global.SetInitializer(b.ctx.ConstStruct(values, false))
-			global.SetGlobalConstant(true)
-			global.SetUnnamedAddr(true)
-			global.SetLinkage(llvm.InternalLinkage)
-			return global
-		}
-
-		// Packed data is bigger than a pointer, so allocate it on the heap.
-		sizeValue := llvm.ConstInt(b.uintptrType, size, false)
-		align := b.targetData.ABITypeAlignment(packedType)
-		alloc := b.mod.NamedFunction("runtime.alloc")
-		packedAlloc := b.CreateCall(alloc.GlobalValueType(), alloc, []llvm.Value{
-			sizeValue,
-			llvm.ConstNull(b.dataPtrType),
-			llvm.Undef(b.dataPtrType), // unused context parameter
-		}, "")
-		packedAlloc.AddCallSiteAttribute(0, b.ctx.CreateEnumAttribute(llvm.AttributeKindID("align"), uint64(align)))
-		if b.NeedsStackObjects {
-			b.trackPointer(packedAlloc)
-		}
-
-		// Store all values in the heap pointer.
-		for i, value := range values {
-			indices := []llvm.Value{
-				llvm.ConstInt(b.ctx.Int32Type(), 0, false),
-				llvm.ConstInt(b.ctx.Int32Type(), uint64(i), false),
-			}
-			gep := b.CreateInBoundsGEP(packedType, packedAlloc, indices, "")
-			b.CreateStore(value, gep)
-		}
-
-		// Return the original heap allocation pointer, which already is an *i8.
-		return packedAlloc
 	}
+
+	// Keep the fast path only for an actual pointer payload.
+	if len(values) == 1 && values[0].Type().TypeKind() == llvm.PointerTypeKind {
+		return values[0]
+	}
+
+	// Check if the values are all constants.
+	constant := true
+	for _, v := range values {
+		if !v.IsConstant() {
+			constant = false
+			break
+		}
+	}
+
+	if constant {
+		global := llvm.AddGlobal(b.mod, packedType, b.pkg.Path()+"$pack")
+		global.SetInitializer(b.ctx.ConstStruct(values, false))
+		global.SetGlobalConstant(true)
+		global.SetUnnamedAddr(true)
+		global.SetLinkage(llvm.InternalLinkage)
+		global.SetAlignment(b.targetData.ABITypeAlignment(packedType))
+		return llvm.ConstBitCast(global, b.dataPtrType)
+	}
+
+	// Non-constant payload: put it on the heap.
+	sizeValue := llvm.ConstInt(b.uintptrType, size, false)
+	align := b.targetData.ABITypeAlignment(packedType)
+	allocType, alloc := b.getFunction(b.program.ImportedPackage("runtime").Members["alloc"].(*ssa.Function))
+	packedAlloc := b.CreateCall(allocType, alloc, []llvm.Value{
+		sizeValue,
+		llvm.ConstNull(b.dataPtrType),
+		llvm.Undef(b.dataPtrType),
+	}, "")
+	packedAlloc.AddCallSiteAttribute(0, b.ctx.CreateEnumAttribute(llvm.AttributeKindID("align"), uint64(align)))
+	if b.NeedsStackObjects {
+		b.trackPointer(packedAlloc)
+	}
+
+	for i, value := range values {
+		indices := []llvm.Value{
+			llvm.ConstInt(b.ctx.Int32Type(), 0, false),
+			llvm.ConstInt(b.ctx.Int32Type(), uint64(i), false),
+		}
+		gep := b.CreateInBoundsGEP(packedType, packedAlloc, indices, "")
+		b.CreateStore(value, gep)
+	}
+
+	return packedAlloc
 }
 
 // emitPointerUnpack extracts a list of values packed using emitPointerPack.
 func (b *builder) emitPointerUnpack(ptr llvm.Value, valueTypes []llvm.Type) []llvm.Value {
 	packedType := b.ctx.StructType(valueTypes, false)
-
-	// Get a correctly-typed pointer to the packed data.
-	var packedAlloc llvm.Value
-	needsLifetimeEnd := false
 	size := b.targetData.TypeAllocSize(packedType)
+
 	if size == 0 {
-		// No data to unpack.
-	} else if len(valueTypes) == 1 && valueTypes[0].TypeKind() == llvm.PointerTypeKind {
-		// A single pointer is always stored directly.
-		return []llvm.Value{ptr}
-	} else if size <= b.targetData.TypeAllocSize(b.dataPtrType) {
-		// Packed data stored directly in pointer.
-		if len(valueTypes) == 1 && valueTypes[0].TypeKind() == llvm.IntegerTypeKind {
-			// Keep this cast in SSA form.
-			return []llvm.Value{b.CreatePtrToInt(ptr, valueTypes[0], "unpack.int")}
+		values := make([]llvm.Value, len(valueTypes))
+		for i, valueType := range valueTypes {
+			values[i] = llvm.ConstNull(valueType)
 		}
-		// Fallback: load it using an alloca.
-		packedAlloc, _ = b.createTemporaryAlloca(b.dataPtrType, "unpack.raw.alloc")
-		b.CreateStore(ptr, packedAlloc)
-		needsLifetimeEnd = true
-	} else {
-		// Packed data stored on the heap.
-		packedAlloc = ptr
+		return values
 	}
-	// Load each value from the packed data.
+
+	// Fast path: a single pointer value is stored directly.
+	if len(valueTypes) == 1 && valueTypes[0].TypeKind() == llvm.PointerTypeKind {
+		return []llvm.Value{ptr}
+	}
+
+	// All other payloads are stored behind a pointer.
+	packedAlloc := b.CreateBitCast(ptr, llvm.PointerType(packedType, 0), "unpack.alloc")
+
 	values := make([]llvm.Value, len(valueTypes))
 	for i, valueType := range valueTypes {
 		if b.targetData.TypeAllocSize(valueType) == 0 {
-			// This value has length zero, so there's nothing to load.
 			values[i] = llvm.ConstNull(valueType)
 			continue
 		}
+
 		indices := []llvm.Value{
 			llvm.ConstInt(b.ctx.Int32Type(), 0, false),
 			llvm.ConstInt(b.ctx.Int32Type(), uint64(i), false),
@@ -197,10 +152,7 @@ func (b *builder) emitPointerUnpack(ptr llvm.Value, valueTypes []llvm.Type) []ll
 		gep := b.CreateInBoundsGEP(packedType, packedAlloc, indices, "")
 		values[i] = b.CreateLoad(valueType, gep, "")
 	}
-	if needsLifetimeEnd {
-		allocSize := llvm.ConstInt(b.ctx.Int64Type(), b.targetData.TypeAllocSize(b.uintptrType), false)
-		b.emitLifetimeEnd(packedAlloc, allocSize)
-	}
+
 	return values
 }
 

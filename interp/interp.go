@@ -4,6 +4,7 @@ package interp
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -68,7 +69,10 @@ func Run(mod llvm.Module, timeout time.Duration, debug bool) error {
 	r := newRunner(mod, timeout, debug)
 	defer r.dispose()
 
-	initAll := mod.NamedFunction("runtime.initAll")
+	initAll := findRuntimeInitAll(mod)
+	if initAll.IsNil() {
+		panic("interp: missing runtime.initAll (raw and asm-safe)")
+	}
 	bb := initAll.EntryBasicBlock()
 
 	// Create a builder, to insert instructions that could not be evaluated at
@@ -110,10 +114,12 @@ func Run(mod llvm.Module, timeout time.Duration, debug bool) error {
 	// finished, the call to the package initializer can be removed.
 	for _, call := range initCalls {
 		initName := call.CalledValue().Name()
-		if !strings.HasSuffix(initName, ".init") {
-			return errorAt(call, "interp: expected all instructions in "+initAll.Name()+" to be *.init() calls")
+		if strings.HasSuffix(initName, ".init") {
+			r.pkgName = initName[:len(initName)-len(".init")]
+		} else {
+			// asm-safe symbol names may no longer end in ".init".
+			r.pkgName = initName
 		}
-		r.pkgName = initName[:len(initName)-len(".init")]
 		fn := call.CalledValue()
 		if r.debug {
 			fmt.Fprintln(os.Stderr, "call:", fn.Name())
@@ -161,7 +167,7 @@ func Run(mod llvm.Module, timeout time.Duration, debug bool) error {
 			continue // constant buffers can't have been modified
 		}
 		initializer, err := obj.buffer.toLLVMValue(obj.llvmGlobal.GlobalValueType(), &mem)
-		if err == errInvalidPtrToIntSize {
+		if errors.Is(err, errInvalidPtrToIntSize) {
 			// This can happen when a previous interp run did not have the
 			// correct LLVM type for a global and made something up. In that
 			// case, some fields could be written out as a series of (null)
@@ -210,10 +216,12 @@ func RunFunc(fn llvm.Value, timeout time.Duration, debug bool) error {
 	r := newRunner(mod, timeout, debug)
 	defer r.dispose()
 	initName := fn.Name()
-	if !strings.HasSuffix(initName, ".init") {
-		return errorAt(fn, "interp: unexpected function name (expected *.init)")
+	if strings.HasSuffix(initName, ".init") {
+		r.pkgName = initName[:len(initName)-len(".init")]
+	} else {
+		// asm-safe symbol names may no longer end in ".init".
+		r.pkgName = initName
 	}
-	r.pkgName = initName[:len(initName)-len(".init")]
 
 	// Create new function with the interp result.
 	newFn := llvm.AddFunction(mod, fn.Name()+".tmp", fn.GlobalValueType())
@@ -316,4 +324,51 @@ func (r *runner) markExternalLoad(llvmValue llvm.Value) error {
 		}
 	}
 	return nil
+}
+
+func asmSafeName(name string) string {
+	var b strings.Builder
+	b.Grow(len(name) + 3)
+	b.WriteString("tg_")
+
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		switch {
+		case c >= 'a' && c <= 'z':
+			b.WriteByte(c)
+		case c >= 'A' && c <= 'Z':
+			b.WriteByte(c)
+		case c >= '0' && c <= '9':
+			b.WriteByte(c)
+		case c == '_':
+			b.WriteByte(c)
+		default:
+			b.WriteByte('_')
+		}
+	}
+
+	return b.String()
+}
+
+func maybeAsmSafeName(name string) string {
+	switch name {
+	case "tinygo_psp_start", "runtime_putchar":
+		return name
+	default:
+		return asmSafeName(name)
+	}
+}
+
+func findRuntimeInitAll(mod llvm.Module) llvm.Value {
+	fn := mod.NamedFunction("runtime.initAll")
+	if !fn.IsNil() {
+		return fn
+	}
+
+	fn = mod.NamedFunction(maybeAsmSafeName("runtime.initAll"))
+	if !fn.IsNil() {
+		return fn
+	}
+
+	return llvm.Value{}
 }

@@ -34,7 +34,7 @@ func Optimize(mod llvm.Module, config *compileopts.Config) []error {
 
 	// Make sure these functions are kept in tact during TinyGo transformation passes.
 	for _, name := range functionsUsedInTransforms {
-		fn := mod.NamedFunction(name)
+		fn := namedFunction(mod, name)
 		if fn.IsNil() {
 			panic(fmt.Errorf("missing core function %q", name))
 		}
@@ -119,7 +119,7 @@ func Optimize(mod llvm.Module, config *compileopts.Config) []error {
 
 	if config.Scheduler() == "none" {
 		// Check for any goroutine starts.
-		if start := mod.NamedFunction("internal/task.start"); !start.IsNil() && len(getUses(start)) > 0 {
+		if start := namedFunction(mod, "internal/task.start"); !start.IsNil() && len(getUses(start)) > 0 {
 			errs := []error{}
 			for _, call := range getUses(start) {
 				errs = append(errs, errorAt(call, "attempted to start a goroutine without a scheduler"))
@@ -139,7 +139,7 @@ func Optimize(mod llvm.Module, config *compileopts.Config) []error {
 
 	// After TinyGo-specific transforms have finished, undo exporting these functions.
 	for _, name := range functionsUsedInTransforms {
-		fn := mod.NamedFunction(name)
+		fn := namedFunction(mod, name)
 		if fn.IsNil() || fn.IsDeclaration() {
 			continue
 		}
