@@ -2,26 +2,22 @@
 
 package runtime
 
-import _ "unsafe"
+import (
+	"unsafe"
+	_ "unsafe"
+)
 
 //go:linkname mainMain main.main
 func mainMain()
 
-// tinygo_psp_start is the PSP entry hook called from bridge/main.c.
-// Keep this function in package runtime so the exported symbol name stays simple.
-//
 //export tinygo_psp_start
 func tinygo_psp_start() {
-	// Initialize the allocator first.
+	var stackMarker uintptr
+	stackTop = uintptr(unsafe.Pointer(&stackMarker))
+
 	initHeap()
-
-	// Run package initializers.
 	initAll()
-
-	// Enter the Go program.
 	mainMain()
-
-	// If main.main returns, stop here.
 	exit(0)
 }
 

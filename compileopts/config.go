@@ -124,7 +124,8 @@ func (c *Config) BuildTags() []string {
 }
 
 // GC returns the garbage collection strategy in use on this platform. Valid
-// values are "none", "leaking", "conservative" and "precise".
+// values are "none", "leaking", "conservative", "custom", "precise",
+// "boehm", and "psp".
 func (c *Config) GC() string {
 	if c.Options.GC != "" {
 		return c.Options.GC

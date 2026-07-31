@@ -1,0 +1,24 @@
+{
+	"llvm-target": "mipsel-none-eabi",
+	"cpu": "mips2",
+	"goos": "linux",
+	"goarch": "mipsle",
+	"build-tags": ["psp", "baremetal", "linux", "mipsle"],
+	"scheduler": "none",
+	"gc": "none",
+	"linker": "ld.lld",
+	"relocation-model": "static",
+	"code-model": "small",
+	"external-assembler": "$PSPDEV/psp/bin/as",
+	"asm-flags": ["-EL", "-mabi=eabi", "-mhard-float", "-msingle-float"],
+	"clang-flags": [
+		"-target",
+		"mipsel-none-eabi",
+		"-mcpu=mips2",
+		"-mhard-float",
+		"-msingle-float",
+		"-mno-abicalls",
+		"-fno-pic",
+		"-fno-addrsig"
+	]
+}

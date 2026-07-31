@@ -9,7 +9,7 @@ import (
 
 func TestVerifyOptions(t *testing.T) {
 
-	expectedGCError := errors.New(`invalid gc option 'incorrect': valid values are none, leaking, conservative, custom, precise, boehm`)
+	expectedGCError := errors.New(`invalid gc option 'incorrect': valid values are none, leaking, conservative, custom, precise, boehm, psp`)
 	expectedSchedulerError := errors.New(`invalid scheduler option 'incorrect': valid values are none, tasks, asyncify, threads, cores`)
 	expectedPrintSizeError := errors.New(`invalid size option 'incorrect': valid values are none, short, full, html`)
 	expectedPanicStrategyError := errors.New(`invalid panic option 'incorrect': valid values are print, trap`)
@@ -52,6 +52,12 @@ func TestVerifyOptions(t *testing.T) {
 			name: "GCOptionCustom",
 			opts: compileopts.Options{
 				GC: "custom",
+			},
+		},
+		{
+			name: "GCOptionPSP",
+			opts: compileopts.Options{
+				GC: "psp",
 			},
 		},
 		{
