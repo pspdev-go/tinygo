@@ -66,5 +66,5 @@ tinygo_swapTask:
     addiu $sp, $sp, 40
 
     // Return into the task.
-    jalr $ra
+    jr $ra
     nop

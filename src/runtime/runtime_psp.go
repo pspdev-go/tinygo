@@ -2,22 +2,10 @@
 
 package runtime
 
-import (
-	"unsafe"
-	_ "unsafe"
-)
-
-//go:linkname mainMain main.main
-func mainMain()
-
 //export tinygo_psp_start
 func tinygo_psp_start() {
-	var stackMarker uintptr
-	stackTop = uintptr(unsafe.Pointer(&stackMarker))
-
-	initHeap()
-	initAll()
-	mainMain()
+	stackTop = uintptr(stacksave())
+	run()
 	exit(0)
 }
 
@@ -35,18 +23,30 @@ func exit(code int) {
 	abort()
 }
 
+//go:linkname sceKernelGetSystemTimeWide sceKernelGetSystemTimeWide
+func sceKernelGetSystemTimeWide() int64
+
+//go:linkname sceKernelDelayThread sceKernelDelayThread
+func sceKernelDelayThread(delay uint32) int32
+
 func ticks() timeUnit {
-	return 0
+	return timeUnit(sceKernelGetSystemTimeWide())
 }
 
 func ticksToNanoseconds(t timeUnit) int64 {
-	return int64(t)
+	return int64(t) * 1000
 }
 
 func nanosecondsToTicks(ns int64) timeUnit {
-	return timeUnit(ns)
+	return timeUnit(ns / 1000)
 }
 
 func sleepTicks(d timeUnit) {
-	_ = d
+	if d <= 0 {
+		return
+	}
+	if d > timeUnit(^uint32(0)) {
+		d = timeUnit(^uint32(0))
+	}
+	sceKernelDelayThread(uint32(d))
 }

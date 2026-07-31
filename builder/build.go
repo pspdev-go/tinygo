@@ -1560,6 +1560,68 @@ func emitObjectFile(config *compileopts.Config, machine llvm.TargetMachine, mod 
 		return os.WriteFile(outpath, llvmBuf.Bytes(), 0666)
 	}
 
+	if config.GOARCH() == "mips" || config.GOARCH() == "mipsle" {
+		// Object-only builds do not compile the target's extra assembly files.
+		// Include the MIPS assembly implementations needed by the runtime in
+		// the generated assembly instead.
+		inlineAsm := `
+.set noreorder
+.pushsection .text.tinygo_longjmp, "ax", @progbits
+.global tinygo_longjmp
+tinygo_longjmp:
+	lw $sp, 0($a0)
+	lw $a1, 4($a0)
+	jr $a1
+	nop
+.popsection
+`
+		if config.Scheduler() == "tasks" {
+			inlineAsm += `
+.pushsection .text.tinygo_startTask, "ax", @progbits
+.global tinygo_startTask
+tinygo_startTask:
+	move $a0, $s1
+	jalr $s0
+	nop
+	j tinygo_task_exit
+	nop
+.popsection
+
+.pushsection .text.tinygo_swapTask, "ax", @progbits
+.global tinygo_swapTask
+tinygo_swapTask:
+	addiu $sp, $sp, -40
+	sw $ra, 36($sp)
+	sw $s8, 32($sp)
+	sw $s7, 28($sp)
+	sw $s6, 24($sp)
+	sw $s5, 20($sp)
+	sw $s4, 16($sp)
+	sw $s3, 12($sp)
+	sw $s2, 8($sp)
+	sw $s1, 4($sp)
+	sw $s0, 0($sp)
+	sw $sp, 0($a1)
+	move $sp, $a0
+	lw $ra, 36($sp)
+	lw $s8, 32($sp)
+	lw $s7, 28($sp)
+	lw $s6, 24($sp)
+	lw $s5, 20($sp)
+	lw $s4, 16($sp)
+	lw $s3, 12($sp)
+	lw $s2, 8($sp)
+	lw $s1, 4($sp)
+	lw $s0, 0($sp)
+	addiu $sp, $sp, 40
+	jr $ra
+	nop
+.popsection
+`
+		}
+		mod.SetInlineAsm(inlineAsm)
+	}
+
 	base := strings.TrimSuffix(outpath, filepath.Ext(outpath))
 	bcPath := base + ".bc"
 
