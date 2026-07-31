@@ -1560,7 +1560,7 @@ func emitObjectFile(config *compileopts.Config, machine llvm.TargetMachine, mod 
 		return os.WriteFile(outpath, llvmBuf.Bytes(), 0666)
 	}
 
-	if config.GOARCH() == "mips" || config.GOARCH() == "mipsle" {
+	if (config.GOARCH() == "mips" || config.GOARCH() == "mipsle") && config.Scheduler() == "tasks" {
 		// Object-only builds do not compile the target's extra assembly files.
 		// Include the MIPS assembly implementations needed by the runtime in
 		// the generated assembly instead.
@@ -1575,8 +1575,7 @@ tinygo_longjmp:
 	nop
 .popsection
 `
-		if config.Scheduler() == "tasks" {
-			inlineAsm += `
+		inlineAsm += `
 .pushsection .text.tinygo_startTask, "ax", @progbits
 .global tinygo_startTask
 tinygo_startTask:
@@ -1618,7 +1617,6 @@ tinygo_swapTask:
 	nop
 .popsection
 `
-		}
 		mod.SetInlineAsm(inlineAsm)
 	}
 

@@ -2,13 +2,6 @@
 
 package runtime
 
-//export tinygo_psp_start
-func tinygo_psp_start() {
-	stackTop = uintptr(stacksave())
-	run()
-	exit(0)
-}
-
 func putchar(c byte) {
 	runtime_putchar(c)
 }
