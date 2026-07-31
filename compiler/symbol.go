@@ -294,21 +294,9 @@ func (c *compilerContext) getFunctionInfo(f *ssa.Function) functionInfo {
 	}
 
 	orig := f.RelString(nil)
-	linkName := maybeAsmSafeName(c.UseAsmSafeSymbolNames, orig)
-
-	// Some declaration-only aliases are referenced by raw name via //go:linkname,
-	// so keep their definitions on the raw symbol.
-	switch orig {
-	case "main.main",
-		"runtime.composeInterface",
-		"runtime.decomposeInterface",
-		"runtime.valueInterfaceUnsafe":
-		linkName = orig
-	}
-
 	info := functionInfo{
 		origLinkName: orig,
-		linkName:     linkName,
+		linkName:     orig,
 	}
 
 	// Check for a few runtime functions that are treated specially.
@@ -330,6 +318,15 @@ func (c *compilerContext) getFunctionInfo(f *ssa.Function) functionInfo {
 
 	// Check for //go: pragmas, which may change the link name (among others).
 	c.parsePragmas(&info, f)
+
+	if c.UseAsmSafeSymbolNames && !info.exported {
+		// Definitions and Go-style //go:linkname aliases must use names that
+		// the external assembler accepts. Keep simple declaration names
+		// unchanged: they refer to C or assembly symbols.
+		if f.Blocks != nil || strings.ContainsAny(info.linkName, "./") {
+			info.linkName = asmSafeName(info.linkName)
+		}
+	}
 
 	c.functionInfos[f] = info
 	return info

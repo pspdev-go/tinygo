@@ -1144,6 +1144,13 @@ func (c *compilerContext) getEmbedFileString(file *loader.EmbedFile) llvm.Value 
 	if dataGlobal.IsNil() {
 		dataGlobal = llvm.AddGlobal(c.mod, dataGlobalType, dataGlobalName)
 	}
+	if file.Data != nil && dataGlobal.Initializer().IsNil() {
+		dataGlobal.SetInitializer(c.ctx.ConstString(string(file.Data), false))
+		dataGlobal.SetLinkage(llvm.LinkOnceODRLinkage)
+		dataGlobal.SetGlobalConstant(true)
+		dataGlobal.SetUnnamedAddr(true)
+		dataGlobal.SetAlignment(1)
+	}
 	strPtr := llvm.ConstInBoundsGEP(dataGlobalType, dataGlobal, []llvm.Value{
 		llvm.ConstInt(c.uintptrType, 0, false),
 		llvm.ConstInt(c.uintptrType, 0, false),

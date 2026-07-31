@@ -98,6 +98,8 @@ type packageAction struct {
 // The error value may be of type *MultiError. Callers will likely want to check
 // for this case and print such errors individually.
 func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (BuildResult, error) {
+	outputObject := filepath.Ext(outpath) == ".o"
+
 	// Read the build ID of the tinygo binary.
 	// Used as a cache key for package builds.
 	compilerBuildID, err := ReadBuildID()
@@ -308,7 +310,7 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (BuildRe
 					for _, file := range allFiles[name] {
 						file.Size = uint64(len(data))
 						file.Hash = hexSum
-						if file.NeedsData {
+						if file.NeedsData || outputObject {
 							file.Data = data
 						}
 					}
@@ -1579,14 +1581,11 @@ func emitObjectFile(config *compileopts.Config, machine llvm.TargetMachine, mod 
 		"-c",
 		"-fno-integrated-as",
 		"-B", assemblerDir,
-		"-Xassembler", "-EL",
-		"-Xassembler", "-mabi=eabi",
-		"-Xassembler", "-mhard-float",
-		"-Xassembler", "-msingle-float",
-		"-Xassembler", "-march=allegrex",
-		"-o", outpath,
-		bcPath,
 	)
+	for _, flag := range config.Target.AsmFlags {
+		clangArgs = append(clangArgs, "-Xassembler", flag)
+	}
+	clangArgs = append(clangArgs, "-o", outpath, bcPath)
 
 	if config.Options.PrintCommands != nil {
 		config.Options.PrintCommands("clang", clangArgs...)
