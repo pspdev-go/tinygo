@@ -313,7 +313,7 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (BuildRe
 						}
 					}
 
-					job.result, err = createEmbedObjectFile(config, string(data), hexSum, name, pkg.OriginalDir(), tmpdir, compilerConfig)
+					job.result, err = createEmbedObjectFile(string(data), hexSum, name, pkg.OriginalDir(), tmpdir, compilerConfig)
 					return err
 				},
 			}
@@ -1073,7 +1073,7 @@ func Build(pkgName, outpath, tmpdir string, config *compileopts.Config) (BuildRe
 
 // createEmbedObjectFile creates a new object file with the given contents, for
 // the embed package.
-func createEmbedObjectFile(config *compileopts.Config, data, hexSum, sourceFile, sourceDir, tmpdir string, compilerConfig *compiler.Config) (string, error) {
+func createEmbedObjectFile(data, hexSum, sourceFile, sourceDir, tmpdir string, compilerConfig *compiler.Config) (string, error) {
 	// TODO: this works for small files, but can be a problem for larger files.
 	// For larger files, it seems more appropriate to generate the object file
 	// manually without going through LLVM.
@@ -1155,7 +1155,25 @@ func createEmbedObjectFile(config *compileopts.Config, data, hexSum, sourceFile,
 	dibuilder.Destroy()
 
 	// Write this LLVM module out as an object file.
-	return emitEmbedObjectFile(config, compilerConfig, mod, tmpdir, hexSum)
+	machine, err := compiler.NewTargetMachine(compilerConfig)
+	if err != nil {
+		return "", err
+	}
+	defer machine.Dispose()
+	outfile, err := os.CreateTemp(tmpdir, "embed-"+hexSum+"-*.o")
+	if err != nil {
+		return "", err
+	}
+	defer outfile.Close()
+	buf, err := machine.EmitToMemoryBuffer(mod, llvm.ObjectFile)
+	if err != nil {
+		return "", err
+	}
+	defer buf.Dispose()
+	if _, err := outfile.Write(buf.Bytes()); err != nil {
+		return "", err
+	}
+	return outfile.Name(), outfile.Close()
 }
 
 // optimizeProgram runs a series of optimizations and transformations that are
@@ -1587,25 +1605,6 @@ func emitObjectFile(config *compileopts.Config, machine llvm.TargetMachine, mod 
 	}
 
 	return nil
-}
-
-func emitEmbedObjectFile(config *compileopts.Config, compilerConfig *compiler.Config, mod llvm.Module, tmpdir, hexSum string) (string, error) {
-	machine, err := compiler.NewTargetMachine(compilerConfig)
-	if err != nil {
-		return "", err
-	}
-	defer machine.Dispose()
-
-	outfile, err := os.CreateTemp(tmpdir, "embed-"+hexSum+"-*.o")
-	if err != nil {
-		return "", err
-	}
-	outfile.Close()
-
-	if err := emitObjectFile(config, machine, mod, outfile.Name()); err != nil {
-		return "", err
-	}
-	return outfile.Name(), nil
 }
 
 func b2u8(b bool) uint8 {
