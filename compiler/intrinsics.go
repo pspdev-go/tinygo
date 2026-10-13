@@ -34,7 +34,9 @@ func (b *builder) defineIntrinsicFunction() {
 	case strings.HasPrefix(name, "runtime/volatile.Store"):
 		b.createVolatileStore()
 	case strings.HasPrefix(name, "sync/atomic.") && token.IsExported(b.fn.Name()):
-		b.createFunctionStart(true)
+		if !b.createFunctionStart(true) {
+			return
+		}
 		returnValue := b.createAtomicOp(b.fn.Name())
 		if !returnValue.IsNil() {
 			b.CreateRet(returnValue)
@@ -49,7 +51,9 @@ func (b *builder) defineIntrinsicFunction() {
 // specially by optimization passes possibly resulting in better generated code,
 // and will otherwise be lowered to regular libc memcpy/memmove calls.
 func (b *builder) createMemoryCopyImpl() {
-	b.createFunctionStart(true)
+	if !b.createFunctionStart(true) {
+		return
+	}
 	params := b.fn.Params[0:3]
 	b.createMemCopy(
 		b.fn.Name(),
@@ -74,7 +78,9 @@ func (b *builder) createMemCopy(kind string, dst, src, len llvm.Value) llvm.Valu
 // memory, declaring the function if needed. These calls will be lowered to
 // regular libc memset calls if they aren't optimized out in a different way.
 func (b *builder) createMemoryZeroImpl() {
-	b.createFunctionStart(true)
+	if !b.createFunctionStart(true) {
+		return
+	}
 	llvmFn := b.getMemsetFunc()
 	params := []llvm.Value{
 		b.getValue(b.fn.Params[0], getPos(b.fn)),
@@ -89,7 +95,9 @@ func (b *builder) createMemoryZeroImpl() {
 // createStackSaveImpl creates a call to llvm.stacksave.p0 to read the current
 // stack pointer.
 func (b *builder) createStackSaveImpl() {
-	b.createFunctionStart(true)
+	if !b.createFunctionStart(true) {
+		return
+	}
 	sp := b.readStackPointer()
 	b.CreateRet(sp)
 }
@@ -108,7 +116,9 @@ func (c *compilerContext) getMemsetFunc() llvm.Value {
 // createKeepAlive creates the runtime.KeepAlive function. It is implemented
 // using inline assembly.
 func (b *builder) createKeepAliveImpl() {
-	b.createFunctionStart(true)
+	if !b.createFunctionStart(true) {
+		return
+	}
 
 	// Get the underlying value of the interface value.
 	interfaceValue := b.getValue(b.fn.Params[0], getPos(b.fn))
@@ -131,7 +141,9 @@ func (b *builder) createKeepAliveImpl() {
 // createAbiEscapeImpl implements the generic internal/abi.Escape function. It
 // currently only supports pointer types.
 func (b *builder) createAbiEscapeImpl() {
-	b.createFunctionStart(true)
+	if !b.createFunctionStart(true) {
+		return
+	}
 
 	// The first parameter is assumed to be a pointer. This is checked at the
 	// call site of createAbiEscapeImpl.
@@ -154,7 +166,9 @@ func (b *builder) createAbiEscapeImpl() {
 // Implement machine.keepAliveNoEscape, which makes sure the compiler keeps the
 // pointer parameter alive until this point (for GC).
 func (b *builder) createMachineKeepAliveImpl() {
-	b.createFunctionStart(true)
+	if !b.createFunctionStart(true) {
+		return
+	}
 	pointerValue := b.getValue(b.fn.Params[0], getPos(b.fn))
 
 	// See createKeepAliveImpl for details.
@@ -186,7 +200,9 @@ var mathToLLVMMapping = map[string]string{
 // beneficial on architectures where 64-bit floating point operations are (much)
 // more expensive than 32-bit ones.
 func (b *builder) defineMathOp() {
-	b.createFunctionStart(true)
+	if !b.createFunctionStart(true) {
+		return
+	}
 	llvmName := mathToLLVMMapping[b.fn.RelString(nil)]
 	if llvmName == "" {
 		panic("unreachable: unknown math operation") // sanity check
@@ -221,7 +237,9 @@ func (b *builder) defineMathBitsIntrinsic() bool {
 	switch name {
 	case "LeadingZeros", "LeadingZeros8", "LeadingZeros16", "LeadingZeros32", "LeadingZeros64",
 		"TrailingZeros", "TrailingZeros8", "TrailingZeros16", "TrailingZeros32", "TrailingZeros64":
-		b.createFunctionStart(true)
+		if !b.createFunctionStart(true) {
+			return true
+		}
 		param := b.getValue(b.fn.Params[0], b.fn.Pos())
 		valueType := param.Type()
 		var intrinsicName string
@@ -247,7 +265,9 @@ func (b *builder) defineMathBitsIntrinsic() bool {
 		//     (unsafe.Sizeof(v) * 8) -  bits.LeadingZeros(n)
 		// Not sure why this isn't already done in the standard library, as it
 		// is much simpler than a lookup table.
-		b.createFunctionStart(true)
+		if !b.createFunctionStart(true) {
+			return true
+		}
 		param := b.getValue(b.fn.Params[0], b.fn.Pos())
 		valueType := param.Type()
 		valueBits := valueType.IntTypeWidth()
@@ -267,7 +287,9 @@ func (b *builder) defineMathBitsIntrinsic() bool {
 		b.CreateRet(result)
 		return true
 	case "OnesCount", "OnesCount8", "OnesCount16", "OnesCount32", "OnesCount64":
-		b.createFunctionStart(true)
+		if !b.createFunctionStart(true) {
+			return true
+		}
 		param := b.getValue(b.fn.Params[0], b.fn.Pos())
 		valueType := param.Type()
 		intrinsicName := "llvm.ctpop.i" + strconv.Itoa(valueType.IntTypeWidth())
@@ -282,7 +304,9 @@ func (b *builder) defineMathBitsIntrinsic() bool {
 		return true
 	case "Reverse", "Reverse8", "Reverse16", "Reverse32", "Reverse64",
 		"ReverseBytes", "ReverseBytes16", "ReverseBytes32", "ReverseBytes64":
-		b.createFunctionStart(true)
+		if !b.createFunctionStart(true) {
+			return true
+		}
 		param := b.getValue(b.fn.Params[0], b.fn.Pos())
 		valueType := param.Type()
 		var intrinsicName string
@@ -304,7 +328,9 @@ func (b *builder) defineMathBitsIntrinsic() bool {
 		// I do not think LLVM guarantees this, but there's a good chance LLVM
 		// already recognized the rotate instruction so it probably won't get
 		// any _worse_ by implementing these rotate functions.
-		b.createFunctionStart(true)
+		if !b.createFunctionStart(true) {
+			return true
+		}
 		x := b.getValue(b.fn.Params[0], b.fn.Pos())
 		k := b.getValue(b.fn.Params[1], b.fn.Pos())
 		valueType := x.Type()

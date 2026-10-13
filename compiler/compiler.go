@@ -1163,7 +1163,7 @@ func (c *compilerContext) getEmbedFileString(file *loader.EmbedFile) llvm.Value 
 // parameters, create basic blocks, and set up debug information.
 // This is separated out from createFunction() so that it is also usable to
 // define compiler intrinsics like the atomic operations in sync/atomic.
-func (b *builder) createFunctionStart(intrinsic bool) {
+func (b *builder) createFunctionStart(intrinsic bool) bool {
 	if b.DumpSSA {
 		fmt.Printf("\nfunc %s:\n", b.fn)
 	}
@@ -1174,7 +1174,7 @@ func (b *builder) createFunctionStart(intrinsic bool) {
 			errValue += "\n\tprevious declaration at " + fnPos.String()
 		}
 		b.addError(b.fn.Pos(), errValue)
-		return
+		return false
 	}
 
 	b.addStandardDefinedAttributes(b.llvmFn)
@@ -1352,13 +1352,16 @@ func (b *builder) createFunctionStart(intrinsic bool) {
 		// because runtime.trackPointer is replaced by an alloca store.
 		b.stackChainAlloca = b.CreateAlloca(b.ctx.Int8Type(), "stackalloc")
 	}
+	return true
 }
 
 // createFunction builds the LLVM IR implementation for this function. The
 // function must not yet be defined, otherwise this function will create a
 // diagnostic.
 func (b *builder) createFunction() {
-	b.createFunctionStart(false)
+	if !b.createFunctionStart(false) {
+		return
+	}
 
 	// Fill blocks with instructions.
 	for _, block := range b.fn.DomPreorder() {
@@ -1402,7 +1405,9 @@ func (b *builder) createFunction() {
 			}
 			b.createInstruction(instr)
 		}
-		if b.fn.Name() == "init" && len(block.Instrs) == 0 {
+		if len(block.Instrs) == 0 && len(b.fn.Blocks) == 1 &&
+			len(block.Preds) == 0 && len(block.Succs) == 0 &&
+			b.fn.Signature.Results().Len() == 0 {
 			b.CreateRetVoid()
 		}
 	}

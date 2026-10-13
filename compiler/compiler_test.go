@@ -128,6 +128,49 @@ func TestCompiler(t *testing.T) {
 	}
 }
 
+func TestEmptyInitializerPSP(t *testing.T) {
+	options := &compileopts.Options{
+		Target: "psp",
+	}
+	mod, errs := testCompilePackage(t, options, "emptyinit.go")
+	if len(errs) != 0 {
+		for _, err := range errs {
+			t.Error(err)
+		}
+		return
+	}
+	defer mod.Dispose()
+
+	if err := llvm.VerifyModule(mod, llvm.PrintMessageAction); err != nil {
+		t.Fatalf("invalid LLVM IR: %s", err)
+	}
+
+	closure := mod.NamedFunction(asmSafeName("main.init$1"))
+	emptyInit := mod.NamedFunction(asmSafeName("main.init#1"))
+	if closure.IsNil() || emptyInit.IsNil() {
+		t.Fatalf("expected both init$1 and init#1 to be emitted; got:\n%s", mod.String())
+	}
+	if closure.Name() == emptyInit.Name() {
+		t.Fatalf("init$1 and init#1 have the same symbol name %q", closure.Name())
+	}
+	if !strings.Contains(emptyInit.String(), "ret void") {
+		t.Errorf("empty init#1 does not return void:\n%s", emptyInit.String())
+	}
+
+	nonemptyInit := mod.NamedFunction(asmSafeName("main.init#2"))
+	if nonemptyInit.IsNil() {
+		t.Fatalf("non-empty init#2 was not emitted:\n%s", mod.String())
+	}
+	if !strings.Contains(nonemptyInit.String(), "store") || !strings.Contains(nonemptyInit.String(), "ret void") {
+		t.Errorf("non-empty init#2 was not lowered correctly:\n%s", nonemptyInit.String())
+	}
+
+	main := mod.NamedFunction(asmSafeName("main.main"))
+	if main.IsNil() || !strings.Contains(main.String(), "br i1") {
+		t.Errorf("normal control-flow block was not emitted:\n%s", main.String())
+	}
+}
+
 // fuzzyEqualIR returns true if the two LLVM IR strings passed in are roughly
 // equal. That means, only relevant lines are compared (excluding comments
 // etc.).
@@ -224,17 +267,18 @@ func testCompilePackage(t *testing.T, options *compileopts.Options, file string)
 		Target:  target,
 	}
 	compilerConfig := &Config{
-		Triple:             config.Triple(),
-		Features:           config.Features(),
-		ABI:                config.ABI(),
-		GOOS:               config.GOOS(),
-		GOARCH:             config.GOARCH(),
-		CodeModel:          config.CodeModel(),
-		RelocationModel:    config.RelocationModel(),
-		Scheduler:          config.Scheduler(),
-		AutomaticStackSize: config.AutomaticStackSize(),
-		DefaultStackSize:   config.StackSize(),
-		NeedsStackObjects:  config.NeedsStackObjects(),
+		Triple:                config.Triple(),
+		Features:              config.Features(),
+		ABI:                   config.ABI(),
+		GOOS:                  config.GOOS(),
+		GOARCH:                config.GOARCH(),
+		CodeModel:             config.CodeModel(),
+		RelocationModel:       config.RelocationModel(),
+		Scheduler:             config.Scheduler(),
+		AutomaticStackSize:    config.AutomaticStackSize(),
+		DefaultStackSize:      config.StackSize(),
+		NeedsStackObjects:     config.NeedsStackObjects(),
+		UseAsmSafeSymbolNames: config.Target.ExternalAssembler != "",
 	}
 	machine, err := NewTargetMachine(compilerConfig)
 	if err != nil {

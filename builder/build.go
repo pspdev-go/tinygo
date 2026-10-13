@@ -28,6 +28,7 @@ import (
 	"github.com/tinygo-org/tinygo/compileopts"
 	"github.com/tinygo-org/tinygo/compiler"
 	"github.com/tinygo-org/tinygo/goenv"
+	"github.com/tinygo-org/tinygo/internal/asmname"
 	"github.com/tinygo-org/tinygo/interp"
 	"github.com/tinygo-org/tinygo/loader"
 	"github.com/tinygo-org/tinygo/stacksize"
@@ -1560,7 +1561,7 @@ func emitObjectFile(config *compileopts.Config, machine llvm.TargetMachine, mod 
 		return os.WriteFile(outpath, llvmBuf.Bytes(), 0666)
 	}
 
-	if (config.GOARCH() == "mips" || config.GOARCH() == "mipsle") && config.Scheduler() == "tasks" {
+	if config.GOARCH() == "mips" || config.GOARCH() == "mipsle" {
 		// Object-only builds do not compile the target's extra assembly files.
 		// Include the MIPS assembly implementations needed by the runtime in
 		// the generated assembly instead.
@@ -1575,7 +1576,8 @@ tinygo_longjmp:
 	nop
 .popsection
 `
-		inlineAsm += `
+		if config.Scheduler() == "tasks" {
+			inlineAsm += `
 .pushsection .text.tinygo_startTask, "ax", @progbits
 .global tinygo_startTask
 tinygo_startTask:
@@ -1619,6 +1621,7 @@ tinygo_swapTask:
 	nop
 .popsection
 `
+		}
 		mod.SetInlineAsm(inlineAsm)
 	}
 
@@ -1676,27 +1679,7 @@ func b2u8(b bool) uint8 {
 }
 
 func asmSafeName(name string) string {
-	var b strings.Builder
-	b.Grow(len(name) + 3)
-	b.WriteString("tg_")
-
-	for i := 0; i < len(name); i++ {
-		c := name[i]
-		switch {
-		case c >= 'a' && c <= 'z':
-			b.WriteByte(c)
-		case c >= 'A' && c <= 'Z':
-			b.WriteByte(c)
-		case c >= '0' && c <= '9':
-			b.WriteByte(c)
-		case c == '_':
-			b.WriteByte(c)
-		default:
-			b.WriteByte('_')
-		}
-	}
-
-	return b.String()
+	return asmname.Mangle(name)
 }
 
 func maybeAsmSafeName(config *compileopts.Config, name string) string {

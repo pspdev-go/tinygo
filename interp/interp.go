@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/tinygo-org/tinygo/compiler/llvmutil"
+	"github.com/tinygo-org/tinygo/internal/asmname"
 	"tinygo.org/x/go-llvm"
 )
 
@@ -327,27 +328,7 @@ func (r *runner) markExternalLoad(llvmValue llvm.Value) error {
 }
 
 func asmSafeName(name string) string {
-	var b strings.Builder
-	b.Grow(len(name) + 3)
-	b.WriteString("tg_")
-
-	for i := 0; i < len(name); i++ {
-		c := name[i]
-		switch {
-		case c >= 'a' && c <= 'z':
-			b.WriteByte(c)
-		case c >= 'A' && c <= 'Z':
-			b.WriteByte(c)
-		case c >= '0' && c <= '9':
-			b.WriteByte(c)
-		case c == '_':
-			b.WriteByte(c)
-		default:
-			b.WriteByte('_')
-		}
-	}
-
-	return b.String()
+	return asmname.Mangle(name)
 }
 
 func maybeAsmSafeName(name string) string {
