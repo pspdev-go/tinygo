@@ -12,6 +12,15 @@ func Current() *Task {
 	return currentTask
 }
 
+// CurrentStackTop returns the exclusive high address of the active task's
+// stack. It returns zero while running on the system stack.
+func CurrentStackTop() uintptr {
+	if currentTask == nil {
+		return 0
+	}
+	return currentTask.state.stackTop
+}
+
 // Pause suspends the current task and returns to the scheduler.
 // This function may only be called when running on a goroutine stack, not when running on the system stack or in an interrupt.
 func Pause() {

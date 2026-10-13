@@ -16,10 +16,16 @@ tinygo_startTask:
     // the arguments.
     move  $a0, $s1
 
+    // Keep the MIPS EABI stack aligned and leave the outgoing argument area
+    // below the exclusive end of this task's stack allocation.
+    addiu $sp, $sp, -16
+
     // Branch to the "goroutine start" function. Use jalr to write the return
     // address to ra so we'll return here after the goroutine exits.
     jalr  $s0
     nop
+
+    addiu $sp, $sp, 16
 
     // After return, exit this goroutine. This is a tail call.
     j     tinygo_task_exit

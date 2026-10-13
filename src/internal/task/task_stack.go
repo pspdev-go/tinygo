@@ -29,6 +29,9 @@ type state struct {
 	// When initializing the goroutine, the stackCanary constant is stored there.
 	// If the stack overflowed, the word will likely no longer equal stackCanary.
 	canaryPtr *uintptr
+
+	// stackTop is the exclusive high address of the allocated task stack.
+	stackTop uintptr
 }
 
 //export tinygo_task_exit
@@ -48,6 +51,7 @@ func (s *state) initialize(fn uintptr, args unsafe.Pointer, stackSize uintptr) {
 	// the next stack switch, there was a stack overflow.
 	s.canaryPtr = (*uintptr)(stack)
 	*s.canaryPtr = stackCanary
+	s.stackTop = uintptr(stack) + stackSize
 
 	// Get a pointer to the top of the stack, where the initial register values
 	// are stored. They will be popped off the stack on the first stack switch

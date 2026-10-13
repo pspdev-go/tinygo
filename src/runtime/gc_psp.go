@@ -26,6 +26,8 @@ var (
 	pspHeapOffset uintptr
 
 	gcBlocks     [maxGCBlocks]gcBlock
+	gcMarkQueue  [maxGCBlocks]uint16
+	gcMarkCount  int
 	gcBlockCount int
 	gcRunning    bool
 
@@ -36,6 +38,7 @@ var (
 
 func initHeap() {
 	pspHeapOffset = 0
+	gcMarkCount = 0
 	gcBlockCount = 0
 	gcRunning = false
 	gcTotalAlloc = 0
@@ -45,6 +48,10 @@ func initHeap() {
 
 func alloc(size uintptr, layout unsafe.Pointer) unsafe.Pointer {
 	if size == 0 {
+		return nil
+	}
+	if size > pspHeapSize {
+		runtimePanic("out of memory")
 		return nil
 	}
 
@@ -90,9 +97,13 @@ func allocBump(size uintptr, layout unsafe.Pointer) unsafe.Pointer {
 		return nil
 	}
 
-	offset := alignUp(pspHeapOffset, gcAlign)
+	// Align the absolute address, not only the offset: a byte array's base is
+	// not guaranteed to have the alignment required by Go objects or task stacks.
+	heapBase := uintptr(unsafe.Pointer(&pspHeap[0]))
+	offset := alignUp(heapBase+pspHeapOffset, gcAlign) - heapBase
 
-	if offset+size > uintptr(len(pspHeap)) {
+	heapSize := uintptr(len(pspHeap))
+	if size > heapSize || offset > heapSize-size {
 		return nil
 	}
 
@@ -210,9 +221,11 @@ func GC() {
 	}
 
 	gcRunning = true
+	gcMarkCount = 0
 
 	clearMarks()
 	markRoots()
+	drainMarkQueue()
 	sweep()
 
 	gcRunning = false
@@ -229,14 +242,60 @@ func markRoots() {
 	var stackMarker uintptr
 
 	stackBottom := uintptr(unsafe.Pointer(&stackMarker))
-	stackEnd := stackTop
-
-	if stackBottom > stackEnd {
-		stackBottom, stackEnd = stackEnd, stackBottom
+	activeStackTop, systemStackBottom := pspGCStackBounds()
+	markRangeOrdered(stackBottom, activeStackTop)
+	if systemStackBottom != 0 {
+		markRangeOrdered(systemStackBottom, stackTop)
 	}
 
-	markRange(stackBottom, stackEnd)
-	markRange(globalsStart, globalsEnd)
+	markGlobalRoots()
+}
+
+func markRangeOrdered(start, end uintptr) {
+	if start > end {
+		start, end = end, start
+	}
+	markRange(start, end)
+}
+
+type addressRange struct {
+	start uintptr
+	end   uintptr
+}
+
+func markGlobalRoots() {
+	// The heap, block table, and mark queue are runtime bookkeeping. Scanning
+	// them as globals both retains stale heap objects and makes every GC cycle
+	// proportional to the full 2 MiB heap and metadata size.
+	heapStart := uintptr(unsafe.Pointer(&pspHeap[0]))
+	ranges := [3]addressRange{
+		{heapStart, heapStart + uintptr(len(pspHeap))},
+		{uintptr(unsafe.Pointer(&gcBlocks[0])), uintptr(unsafe.Pointer(&gcBlocks[0])) + unsafe.Sizeof(gcBlocks)},
+		{uintptr(unsafe.Pointer(&gcMarkQueue[0])), uintptr(unsafe.Pointer(&gcMarkQueue[0])) + unsafe.Sizeof(gcMarkQueue)},
+	}
+	// Sort the three small exclusions by address so this also works if the
+	// linker changes the order of zero-initialized globals.
+	for i := 1; i < len(ranges); i++ {
+		for j := i; j > 0 && ranges[j].start < ranges[j-1].start; j-- {
+			ranges[j], ranges[j-1] = ranges[j-1], ranges[j]
+		}
+	}
+
+	cursor := globalsStart
+	for _, excluded := range ranges {
+		if excluded.end <= cursor || excluded.start >= globalsEnd {
+			continue
+		}
+		if excluded.start > cursor {
+			markRange(cursor, excluded.start)
+		}
+		if excluded.end > cursor {
+			cursor = excluded.end
+		}
+	}
+	if cursor < globalsEnd {
+		markRange(cursor, globalsEnd)
+	}
 }
 
 func markRange(start, end uintptr) {
@@ -248,27 +307,31 @@ func markRange(start, end uintptr) {
 }
 
 func markPointer(candidate uintptr) {
-	b := findBlock(candidate)
-	if b == nil || b.free || b.mark {
+	index := findBlockIndex(candidate)
+	if index < 0 {
 		return
 	}
 
+	b := &gcBlocks[index]
+	if b.mark {
+		return
+	}
 	b.mark = true
-	markObject(b)
+	gcMarkQueue[gcMarkCount] = uint16(index)
+	gcMarkCount++
 }
 
-func markObject(b *gcBlock) {
-	// TODO: use b.layout for precise scanning.
-	markObjectConservative(b)
-}
-
-func markObjectConservative(b *gcBlock) {
-	start := b.start
-	end := b.start + b.size
-
-	for addr := start; addr+unsafe.Sizeof(uintptr(0)) <= end; addr += unsafe.Sizeof(uintptr(0)) {
-		candidate := *(*uintptr)(unsafe.Pointer(addr))
-		markPointer(candidate)
+// drainMarkQueue scans each reachable block iteratively. Recursive marking
+// could overflow the PSP's small stacks for a long chain of heap objects.
+func drainMarkQueue() {
+	for i := 0; i < gcMarkCount; i++ {
+		b := &gcBlocks[gcMarkQueue[i]]
+		start := b.start
+		end := b.start + b.size
+		for addr := start; addr+unsafe.Sizeof(uintptr(0)) <= end; addr += unsafe.Sizeof(uintptr(0)) {
+			candidate := *(*uintptr)(unsafe.Pointer(addr))
+			markPointer(candidate)
+		}
 	}
 }
 
@@ -322,30 +385,50 @@ func setHeapEnd(newHeapEnd uintptr) {
 }
 
 func findBlock(ptr uintptr) *gcBlock {
-	for i := 0; i < gcBlockCount; i++ {
-		b := &gcBlocks[i]
+	index := findBlockIndex(ptr)
+	if index < 0 {
+		return nil
+	}
+	return &gcBlocks[index]
+}
 
-		if b.free {
-			continue
-		}
-
-		if ptr >= b.start && ptr < b.start+b.size {
-			return b
+// findBlockIndex finds the allocation containing ptr. Blocks are registered
+// monotonically by the bump allocator and never moved, so their starts stay
+// sorted even when a freed block is reused.
+func findBlockIndex(ptr uintptr) int {
+	low, high := 0, gcBlockCount
+	for low < high {
+		mid := low + (high-low)/2
+		if gcBlocks[mid].start <= ptr {
+			low = mid + 1
+		} else {
+			high = mid
 		}
 	}
-
-	return nil
+	if low == 0 {
+		return -1
+	}
+	index := low - 1
+	b := &gcBlocks[index]
+	if b.free || ptr >= b.start+b.size {
+		return -1
+	}
+	return index
 }
 
 func findExactBlock(ptr uintptr) *gcBlock {
-	for i := 0; i < gcBlockCount; i++ {
-		b := &gcBlocks[i]
-
-		if b.start == ptr {
-			return b
+	low, high := 0, gcBlockCount
+	for low < high {
+		mid := low + (high-low)/2
+		if gcBlocks[mid].start < ptr {
+			low = mid + 1
+		} else {
+			high = mid
 		}
 	}
-
+	if low < gcBlockCount && gcBlocks[low].start == ptr {
+		return &gcBlocks[low]
+	}
 	return nil
 }
 

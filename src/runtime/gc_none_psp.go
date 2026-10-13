@@ -22,10 +22,17 @@ func alloc(size uintptr, layout unsafe.Pointer) unsafe.Pointer {
 	if size == 0 {
 		return nil
 	}
+	if size > uintptr(len(pspHeap)) {
+		runtimePanic("out of memory")
+		return nil
+	}
 
 	// Align to 8 bytes.
-	offset := (pspHeapOffset + 7) &^ 7
-	if offset+size > uintptr(len(pspHeap)) {
+	base := uintptr(unsafe.Pointer(&pspHeap[0]))
+	offset := (base + pspHeapOffset + 7) &^ 7
+	offset -= base
+	heapSize := uintptr(len(pspHeap))
+	if size > heapSize || offset > heapSize-size {
 		runtimePanic("out of memory")
 		return nil
 	}

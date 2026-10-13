@@ -1580,8 +1580,10 @@ tinygo_longjmp:
 .global tinygo_startTask
 tinygo_startTask:
 	move $a0, $s1
+	addiu $sp, $sp, -16
 	jalr $s0
 	nop
+	addiu $sp, $sp, 16
 	j tinygo_task_exit
 	nop
 .popsection
