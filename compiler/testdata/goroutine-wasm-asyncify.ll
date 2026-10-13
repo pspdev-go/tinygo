@@ -3,6 +3,8 @@ source_filename = "goroutine.go"
 target datalayout = "e-m:e-p:32:32-p10:8:8-p20:8:8-i64:64-i128:128-n32:64-S128-ni:1:10:20"
 target triple = "wasm32-unknown-wasi"
 
+@"main$pack" = internal unnamed_addr constant { i32 } { i32 5 }, align 4
+@"main$pack.1" = internal unnamed_addr constant { i32 } { i32 5 }, align 4
 @"main$string" = internal unnamed_addr constant [4 x i8] c"test", align 1
 
 ; Function Attrs: allockind("alloc,zeroed") allocsize(0)
@@ -19,7 +21,7 @@ entry:
 ; Function Attrs: nounwind
 define hidden void @main.regularFunctionGoroutine(ptr %context) unnamed_addr #2 {
 entry:
-  call void @"internal/task.start"(i32 ptrtoint (ptr @"main.regularFunction$gowrapper" to i32), ptr nonnull inttoptr (i32 5 to ptr), i32 65536, ptr undef) #11
+  call void @"internal/task.start"(i32 ptrtoint (ptr @"main.regularFunction$gowrapper" to i32), ptr nonnull @"main$pack", i32 65536, ptr undef) #11
   ret void
 }
 
@@ -30,8 +32,8 @@ declare void @runtime.deadlock(ptr) #1
 ; Function Attrs: nounwind
 define linkonce_odr void @"main.regularFunction$gowrapper"(ptr %0) unnamed_addr #3 {
 entry:
-  %unpack.int = ptrtoint ptr %0 to i32
-  call void @main.regularFunction(i32 %unpack.int, ptr undef) #11
+  %1 = load i32, ptr %0, align 4
+  call void @main.regularFunction(i32 %1, ptr undef) #11
   call void @runtime.deadlock(ptr undef) #11
   unreachable
 }
@@ -41,7 +43,7 @@ declare void @"internal/task.start"(i32, ptr, i32, ptr) #1
 ; Function Attrs: nounwind
 define hidden void @main.inlineFunctionGoroutine(ptr %context) unnamed_addr #2 {
 entry:
-  call void @"internal/task.start"(i32 ptrtoint (ptr @"main.inlineFunctionGoroutine$1$gowrapper" to i32), ptr nonnull inttoptr (i32 5 to ptr), i32 65536, ptr undef) #11
+  call void @"internal/task.start"(i32 ptrtoint (ptr @"main.inlineFunctionGoroutine$1$gowrapper" to i32), ptr nonnull @"main$pack.1", i32 65536, ptr undef) #11
   ret void
 }
 
@@ -54,8 +56,8 @@ entry:
 ; Function Attrs: nounwind
 define linkonce_odr void @"main.inlineFunctionGoroutine$1$gowrapper"(ptr %0) unnamed_addr #4 {
 entry:
-  %unpack.int = ptrtoint ptr %0 to i32
-  call void @"main.inlineFunctionGoroutine$1"(i32 %unpack.int, ptr undef)
+  %1 = load i32, ptr %0, align 4
+  call void @"main.inlineFunctionGoroutine$1"(i32 %1, ptr undef)
   call void @runtime.deadlock(ptr undef) #11
   unreachable
 }
@@ -200,12 +202,12 @@ entry:
 attributes #0 = { allockind("alloc,zeroed") allocsize(0) "alloc-family"="runtime.alloc" "target-features"="+bulk-memory,+bulk-memory-opt,+call-indirect-overlong,+mutable-globals,+nontrapping-fptoint,+sign-ext,-multivalue,-reference-types" }
 attributes #1 = { "target-features"="+bulk-memory,+bulk-memory-opt,+call-indirect-overlong,+mutable-globals,+nontrapping-fptoint,+sign-ext,-multivalue,-reference-types" }
 attributes #2 = { nounwind "target-features"="+bulk-memory,+bulk-memory-opt,+call-indirect-overlong,+mutable-globals,+nontrapping-fptoint,+sign-ext,-multivalue,-reference-types" }
-attributes #3 = { nounwind "target-features"="+bulk-memory,+bulk-memory-opt,+call-indirect-overlong,+mutable-globals,+nontrapping-fptoint,+sign-ext,-multivalue,-reference-types" "tinygo-gowrapper"="main.regularFunction" }
-attributes #4 = { nounwind "target-features"="+bulk-memory,+bulk-memory-opt,+call-indirect-overlong,+mutable-globals,+nontrapping-fptoint,+sign-ext,-multivalue,-reference-types" "tinygo-gowrapper"="main.inlineFunctionGoroutine$1" }
-attributes #5 = { nounwind "target-features"="+bulk-memory,+bulk-memory-opt,+call-indirect-overlong,+mutable-globals,+nontrapping-fptoint,+sign-ext,-multivalue,-reference-types" "tinygo-gowrapper"="main.closureFunctionGoroutine$1" }
-attributes #6 = { nounwind "target-features"="+bulk-memory,+bulk-memory-opt,+call-indirect-overlong,+mutable-globals,+nontrapping-fptoint,+sign-ext,-multivalue,-reference-types" "tinygo-gowrapper" }
+attributes #3 = { nounwind "target-features"="+bulk-memory,+bulk-memory-opt,+call-indirect-overlong,+mutable-globals,+nontrapping-fptoint,+sign-ext,-multivalue,-reference-types" "tinygo-gowrapper"="main.regularFunction$gowrapper" }
+attributes #4 = { nounwind "target-features"="+bulk-memory,+bulk-memory-opt,+call-indirect-overlong,+mutable-globals,+nontrapping-fptoint,+sign-ext,-multivalue,-reference-types" "tinygo-gowrapper"="main.inlineFunctionGoroutine$1$gowrapper" }
+attributes #5 = { nounwind "target-features"="+bulk-memory,+bulk-memory-opt,+call-indirect-overlong,+mutable-globals,+nontrapping-fptoint,+sign-ext,-multivalue,-reference-types" "tinygo-gowrapper"="main.closureFunctionGoroutine$1$gowrapper" }
+attributes #6 = { nounwind "target-features"="+bulk-memory,+bulk-memory-opt,+call-indirect-overlong,+mutable-globals,+nontrapping-fptoint,+sign-ext,-multivalue,-reference-types" "tinygo-gowrapper"="main.funcGoroutine.gowrapper" }
 attributes #7 = { nocallback nofree nosync nounwind speculatable willreturn memory(none) }
 attributes #8 = { nocallback nofree nounwind willreturn memory(argmem: readwrite) }
 attributes #9 = { "target-features"="+bulk-memory,+bulk-memory-opt,+call-indirect-overlong,+mutable-globals,+nontrapping-fptoint,+sign-ext,-multivalue,-reference-types" "tinygo-invoke"="reflect/methods.Print(string)" "tinygo-methods"="reflect/methods.Print(string)" }
-attributes #10 = { nounwind "target-features"="+bulk-memory,+bulk-memory-opt,+call-indirect-overlong,+mutable-globals,+nontrapping-fptoint,+sign-ext,-multivalue,-reference-types" "tinygo-gowrapper"="interface:{Print:func:{basic:string}{}}.Print$invoke" }
+attributes #10 = { nounwind "target-features"="+bulk-memory,+bulk-memory-opt,+call-indirect-overlong,+mutable-globals,+nontrapping-fptoint,+sign-ext,-multivalue,-reference-types" "tinygo-gowrapper"="interface:{Print:func:{basic:string}{}}.Print$invoke$gowrapper" }
 attributes #11 = { nounwind }

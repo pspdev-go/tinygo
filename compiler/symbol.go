@@ -154,15 +154,20 @@ func (c *compilerContext) getFunction(fn *ssa.Function) (llvm.Type, llvm.Value) 
 	// Set a number of function or parameter attributes, depending on the
 	// function. These functions are runtime functions that are known to have
 	// certain attributes that might not be inferred by the compiler.
+	if hasLinkName(info, "internal/abi.NoEscape") ||
+		hasLinkName(info, "machine.keepAliveNoEscape") ||
+		hasLinkName(info, "machine.unsafeNoEscape") {
+		// These attributes describe the linked function, not necessarily the
+		// Go declaration that refers to it. In particular, //go:linkname aliases
+		// must keep the noescape property so escape analysis can see through
+		// them.
+		llvmFn.AddAttributeAtIndex(1, c.ctx.CreateEnumAttribute(llvm.AttributeKindID("nocapture"), 0))
+	}
 	switch info.origLinkName {
 	case "abort":
 		// On *nix systems, the "abort" functuion in libc is used to handle fatal panics.
 		// Mark it as noreturn so LLVM can optimize away code.
 		llvmFn.AddFunctionAttr(c.ctx.CreateEnumAttribute(llvm.AttributeKindID("noreturn"), 0))
-	case "internal/abi.NoEscape":
-		llvmFn.AddAttributeAtIndex(1, c.ctx.CreateEnumAttribute(llvm.AttributeKindID("nocapture"), 0))
-	case "machine.keepAliveNoEscape", "machine.unsafeNoEscape":
-		llvmFn.AddAttributeAtIndex(1, c.ctx.CreateEnumAttribute(llvm.AttributeKindID("nocapture"), 0))
 	case "runtime.alloc":
 		// Tell the optimizer that runtime.alloc is an allocator, meaning that it
 		// returns values that are never null and never alias to an existing value.
@@ -797,6 +802,10 @@ func hasUnsafeImport(pkg *types.Package) bool {
 // Return a name that is safe to use in assembly. In particular, it
 func asmSafeName(name string) string {
 	return asmname.Mangle(name)
+}
+
+func hasLinkName(info functionInfo, name string) bool {
+	return info.origLinkName == name || info.linkName == name || info.linkName == asmSafeName(name)
 }
 
 func maybeAsmSafeName(use bool, name string) string {

@@ -6,6 +6,7 @@ target triple = "wasm32-unknown-wasi"
 %runtime._interface = type { ptr, ptr }
 %runtime._string = type { ptr, i32 }
 
+@"main$pack" = internal unnamed_addr constant { i32 } zeroinitializer, align 4
 @"reflect/types.type:basic:int" = linkonce_odr constant { i8, ptr } { i8 -62, ptr @"reflect/types.type:pointer:basic:int" }, align 4
 @"reflect/types.type:pointer:basic:int" = linkonce_odr constant { i8, i16, ptr } { i8 -43, i16 0, ptr @"reflect/types.type:basic:int" }, align 4
 @"reflect/types.type:pointer:named:error" = linkonce_odr constant { i8, i16, ptr } { i8 -43, i16 0, ptr @"reflect/types.type:named:error" }, align 4
@@ -33,8 +34,8 @@ define hidden %runtime._interface @main.simpleType(ptr %context) unnamed_addr #2
 entry:
   %stackalloc = alloca i8, align 1
   call void @runtime.trackPointer(ptr nonnull @"reflect/types.type:basic:int", ptr nonnull %stackalloc, ptr undef) #7
-  call void @runtime.trackPointer(ptr null, ptr nonnull %stackalloc, ptr undef) #7
-  ret %runtime._interface { ptr @"reflect/types.type:basic:int", ptr null }
+  call void @runtime.trackPointer(ptr nonnull @"main$pack", ptr nonnull %stackalloc, ptr undef) #7
+  ret %runtime._interface { ptr @"reflect/types.type:basic:int", ptr @"main$pack" }
 }
 
 ; Function Attrs: nounwind
